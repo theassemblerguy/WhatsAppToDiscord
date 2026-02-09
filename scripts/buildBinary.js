@@ -78,7 +78,7 @@ const pkgArgs = [
   outputPath,
 ];
 
-if (pkgOs === 'win') {
+if (pkgOs === 'win' || pkgArch === 'arm64') {
   pkgArgs.push('--no-bytecode', '--public', '--public-packages', '*');
 }
 
