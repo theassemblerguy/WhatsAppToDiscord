@@ -15,7 +15,7 @@ Originally created by [Fatih Kilic](https://github.com/FKLC), the project is now
 
 ## Requirements
 
-- Node.js 24 or higher (or Docker)
+- Node.js 24 or higher
 
 ## Highlights
 
