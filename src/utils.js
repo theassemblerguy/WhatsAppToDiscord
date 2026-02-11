@@ -3492,24 +3492,65 @@ const whatsapp = {
     }
     return documentContent;
   },
-  async createQuoteMessage(message) {
+  async createQuoteMessage(message, jid) {
     const { channelId, messageId } = message.reference || {};
     if (!channelId || !messageId) return null;
+    const normalizedChatJid = this.formatJid(jid);
+    if (!normalizedChatJid) return null;
 
     try {
       const channel = await message.client.channels.fetch(channelId);
       const refMessage = await channel.messages.fetch(messageId);
+      const mappedWaId = state.lastMessages[refMessage.id];
 
-      if (state.lastMessages[refMessage.id] == null) return null;
+      if (typeof mappedWaId !== 'string' || !mappedWaId) return null;
+
+      const candidates = new Set([normalizedChatJid]);
+      try {
+        const [primary, alternate] = await this.hydrateJidPair(normalizedChatJid);
+        [primary, alternate].map((entry) => this.formatJid(entry)).forEach((entry) => {
+          if (entry) candidates.add(entry);
+        });
+      } catch (err) {
+        state.logger?.debug?.({ err }, 'Failed to hydrate JID candidates while creating quote message');
+      }
+
+      let storedMessage = null;
+      for (const remoteJid of candidates) {
+        storedMessage = messageStore.get({ remoteJid, id: mappedWaId });
+        if (storedMessage) break;
+      }
+
+      const storedKey = storedMessage?.key || {};
+      const remoteJid = this.formatJid(storedKey.remoteJid) || normalizedChatJid;
+      if (!remoteJid) return null;
+
+      const fromMe = typeof storedKey.fromMe === 'boolean'
+        ? storedKey.fromMe
+        : !(refMessage.webhookId && refMessage.author?.username !== 'You');
+      const key = {
+        remoteJid,
+        id: mappedWaId,
+        fromMe,
+      };
+
+      if (remoteJid.endsWith('@g.us')) {
+        const participantFromStore = this.formatJid(storedKey.participant || storedKey.participantAlt);
+        if (participantFromStore) {
+          key.participant = participantFromStore;
+        } else {
+          const participantFallback = refMessage.webhookId && refMessage.author?.username !== 'You'
+            ? this.toJid(refMessage.author.username)
+            : this.formatJid(state.waClient?.user?.id);
+          if (participantFallback) {
+            key.participant = participantFallback;
+          }
+        }
+      }
 
       return {
-        key: {
-          remoteJid: refMessage.webhookId && refMessage.author.username !== 'You'
-            ? this.toJid(refMessage.author.username)
-            : state.waClient.user.id,
-          id: state.lastMessages[refMessage.id],
-        },
-        message: { conversation: this.convertDiscordFormatting(refMessage.content) },
+        key,
+        message: { conversation: this.convertDiscordFormatting(refMessage.content ?? refMessage.cleanContent ?? '') },
       };
     } catch (err) {
       state.logger?.error(err);

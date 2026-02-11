@@ -37,6 +37,12 @@ const UPDATE_BUTTON_IDS = utils.discord.updateButtonIds;
 const ROLLBACK_BUTTON_ID = utils.discord.rollbackButtonId;
 const bridgePinnedMessages = new Set();
 const pinExpiryTimers = new Map();
+const DISCORD_FORWARD_CONTEXT_TTL_MS = 5 * 60 * 1000;
+const DISCORD_MESSAGE_LOCATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const discordForwardContextCache = new Map();
+const discordForwardContextTimers = new Map();
+const discordMessageLocationCache = new Map();
+const discordMessageLocationTimers = new Map();
 let restartInProgress = false;
 
 const requestSafeRestart = async (ctx, { message = 'Restarting...', exitCode = 0 } = {}) => {
@@ -144,6 +150,125 @@ const clearPinExpiryNotice = (messageId) => {
     clearTimeout(timer);
     pinExpiryTimers.delete(messageId);
   }
+};
+
+const clearTimedCacheEntry = (cache, timers, key) => {
+  if (!key) return;
+  const normalizedKey = String(key);
+  const timer = timers.get(normalizedKey);
+  if (timer) {
+    clearTimeout(timer);
+    timers.delete(normalizedKey);
+  }
+  cache.delete(normalizedKey);
+};
+
+const setTimedCacheEntry = (cache, timers, key, value, ttlMs) => {
+  if (!key) return;
+  const normalizedKey = String(key);
+  clearTimedCacheEntry(cache, timers, normalizedKey);
+  cache.set(normalizedKey, value);
+  const timer = setTimeout(() => {
+    cache.delete(normalizedKey);
+    timers.delete(normalizedKey);
+  }, ttlMs);
+  timer?.unref?.();
+  timers.set(normalizedKey, timer);
+};
+
+const consumeForwardContext = (messageId) => {
+  if (!messageId) return null;
+  const normalizedId = String(messageId);
+  const context = discordForwardContextCache.get(normalizedId) || null;
+  clearTimedCacheEntry(discordForwardContextCache, discordForwardContextTimers, normalizedId);
+  return context;
+};
+
+const buildDiscordMessageUrl = ({ guildId, channelId, messageId }) => {
+  if (!guildId || !channelId || !messageId) return null;
+  return `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
+};
+
+const cacheDiscordMessageLocation = (message, fallbackChannelId = null) => {
+  const messageId = message?.id ? String(message.id) : null;
+  if (!messageId) return;
+  const channelId = message?.channelId || message?.channel?.id || fallbackChannelId || null;
+  const guildId = message?.guildId || message?.guild?.id || state.settings.GuildID || null;
+  const url = typeof message?.url === 'string'
+    ? message.url
+    : buildDiscordMessageUrl({ guildId, channelId, messageId });
+  if (!channelId && !url) return;
+  setTimedCacheEntry(
+    discordMessageLocationCache,
+    discordMessageLocationTimers,
+    messageId,
+    { channelId: channelId || null, url: url || null },
+    DISCORD_MESSAGE_LOCATION_TTL_MS,
+  );
+};
+
+const buildForwardContext = (message) => {
+  const messageType = typeof message.type === 'number' ? Constants.MessageTypes?.[message.type] : message.type;
+  const rawContext = consumeForwardContext(message.id);
+  const fallbackIsForwarded = Boolean(message.reference && messageType !== 'REPLY');
+  const sourceChannelId = rawContext?.sourceChannelId || message.reference?.channelId || null;
+  const sourceMessageId = rawContext?.sourceMessageId || message.reference?.messageId || null;
+  const sourceGuildId = rawContext?.sourceGuildId || message.reference?.guildId || null;
+
+  return {
+    isForwarded: rawContext ? Boolean(rawContext.isForwarded) : fallbackIsForwarded,
+    sourceChannelId,
+    sourceMessageId,
+    sourceGuildId,
+  };
+};
+
+const resolveForwardSourceFromQuote = async (message) => {
+  const quotedWaId = message?.quote?.id;
+  if (!quotedWaId) return null;
+
+  const mappedDiscordId = state.lastMessages?.[quotedWaId];
+  if (typeof mappedDiscordId !== 'string' || !mappedDiscordId) return null;
+
+  const cached = discordMessageLocationCache.get(mappedDiscordId);
+  if (cached) {
+    return {
+      channelId: cached.channelId || null,
+      url: cached.url || null,
+    };
+  }
+
+  const channelIds = [...new Set(
+    Object.values(state.chats || {})
+      .map((chat) => chat?.channelId)
+      .filter(Boolean),
+  )];
+  for (const channelId of channelIds) {
+    // eslint-disable-next-line no-await-in-loop
+    const channel = await utils.discord.getChannel(channelId);
+    if (!channel?.messages?.fetch) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const found = await channel.messages.fetch(mappedDiscordId).catch(() => null);
+    if (!found) continue;
+    cacheDiscordMessageLocation(found, channelId);
+    const resolved = discordMessageLocationCache.get(mappedDiscordId);
+    if (resolved) {
+      return {
+        channelId: resolved.channelId || channelId,
+        url: resolved.url || null,
+      };
+    }
+    return {
+      channelId,
+      url: buildDiscordMessageUrl({
+        guildId: found.guildId || state.settings.GuildID || null,
+        channelId,
+        messageId: mappedDiscordId,
+      }),
+    };
+  }
+
+  return null;
 };
 
 class CommandResponder {
@@ -262,11 +387,23 @@ const sendWhatsappMessage = async (message, mediaFiles = [], messageIds = []) =>
   const allowedMentions = mentionIds.length ? { parse: [], users: mentionIds } : undefined;
   const content = utils.discord.convertWhatsappFormatting(message.content);
   const quoteContent = message.quote ? utils.discord.convertWhatsappFormatting(message.quote.content) : null;
+  const forwardedSource = message.isForwarded ? await resolveForwardSourceFromQuote(message) : null;
 
   if (message.isGroup && state.settings.WAGroupPrefix) { msgContent += `[${message.name}] `; }
 
   if (message.isForwarded) {
-    msgContent += `forwarded message:\n${(content || '').split('\n').join('\n> ')}`;
+    const lines = ['Forwarded'];
+    if (forwardedSource?.channelId) {
+      lines.push(`Source: <#${forwardedSource.channelId}>`);
+    }
+    if (forwardedSource?.url) {
+      lines.push(`Jump: ${forwardedSource.url}`);
+    }
+    const forwardedBody = (content || '').split('\n').join('\n> ');
+    if (forwardedBody) {
+      lines.push(`> ${forwardedBody}`);
+    }
+    msgContent += lines.join('\n');
   }
   else if (message.quote) {
     const lines = [];
@@ -375,6 +512,7 @@ const sendWhatsappMessage = async (message, mediaFiles = [], messageIds = []) =>
       components,
       allowedMentions,
     }, message.channelJid);
+    cacheDiscordMessageLocation(dcMessage, webhook.channelId);
     if (message.id != null) {
       // bidirectional map automatically stores both directions
       state.lastMessages[dcMessage.id] = message.id;
@@ -420,6 +558,7 @@ const sendWhatsappMessage = async (message, mediaFiles = [], messageIds = []) =>
         allowedMentions,
       };
       lastDcMessage = await utils.discord.safeWebhookSend(webhook, sendArgs, message.channelJid);
+      cacheDiscordMessageLocation(lastDcMessage, webhook.channelId);
 
       if (i === 0 && lastDcMessage.channel.type === 'GUILD_NEWS' && state.settings.Publish) {
         // eslint-disable-next-line no-await-in-loop
@@ -746,6 +885,7 @@ client.on('whatsappDelete', async ({ id, jid }) => {
   }
   delete state.lastMessages[id];
   delete state.lastMessages[messageId];
+  clearTimedCacheEntry(discordMessageLocationCache, discordMessageLocationTimers, messageId);
 });
 
 client.on('whatsappCall', async ({ call, jid }) => {
@@ -2429,6 +2569,45 @@ client.on('interactionCreate', async (interaction) => {
   await handleInteractionCommand(interaction, commandName);
 });
 
+client.on('raw', (packet = {}) => {
+  if (packet.t !== 'MESSAGE_CREATE') {
+    return;
+  }
+
+  const rawData = packet.d || {};
+  const messageId = rawData.id ? String(rawData.id) : null;
+  if (!messageId) {
+    return;
+  }
+
+  const snapshots = Array.isArray(rawData.message_snapshots)
+    ? rawData.message_snapshots
+    : (Array.isArray(rawData.messageSnapshots) ? rawData.messageSnapshots : []);
+  const reference = rawData.message_reference || rawData.messageReference || {};
+  const sourceChannelId = reference.channel_id || reference.channelId || null;
+  const sourceMessageId = reference.message_id || reference.messageId || null;
+  const sourceGuildId = reference.guild_id || reference.guildId || null;
+  const hasForwardSignal = snapshots.length > 0;
+  const hasSourceReference = Boolean(sourceChannelId || sourceMessageId || sourceGuildId);
+
+  if (!hasForwardSignal && !hasSourceReference) {
+    return;
+  }
+
+  setTimedCacheEntry(
+    discordForwardContextCache,
+    discordForwardContextTimers,
+    messageId,
+    {
+      isForwarded: hasForwardSignal,
+      sourceChannelId,
+      sourceMessageId,
+      sourceGuildId,
+    },
+    DISCORD_FORWARD_CONTEXT_TTL_MS,
+  );
+});
+
 client.on('messageCreate', async (message) => {
   const isWebhookMessage = message.webhookId != null;
 
@@ -2459,7 +2638,8 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  state.waClient.ev.emit('discordMessage', { jid, message });
+  const forwardContext = buildForwardContext(message);
+  state.waClient.ev.emit('discordMessage', { jid, message, forwardContext });
 });
 
 client.on('messageUpdate', async (oldMessage, message) => {
@@ -2555,6 +2735,9 @@ client.on('messageDelete', async (message) => {
   if (!state.settings.DeleteMessages) {
     return;
   }
+
+  clearTimedCacheEntry(discordMessageLocationCache, discordMessageLocationTimers, message?.id);
+  clearTimedCacheEntry(discordForwardContextCache, discordForwardContextTimers, message?.id);
 
   const jid = utils.discord.channelIdToJid(message.channelId);
   if (jid == null) {

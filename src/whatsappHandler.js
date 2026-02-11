@@ -918,17 +918,18 @@ const connectToWhatsApp = async (retry = 1) => {
         });
     });
 
-    client.ev.on('discordMessage', async ({ jid, message }) => {
+    client.ev.on('discordMessage', async ({ jid, message, forwardContext }) => {
         if ((state.settings.oneWay >> 1 & 1) === 0) {
             return;
         }
-        
+
+        const isForwardedFromDiscord = Boolean(forwardContext?.isForwarded);
         const options = {};
 
-        if (message.reference) {
-            options.quoted = await utils.whatsapp.createQuoteMessage(message);
+        if (!isForwardedFromDiscord && message.reference) {
+            options.quoted = await utils.whatsapp.createQuoteMessage(message, jid);
             if (options.quoted == null) {
-                message.channel.send("Couldn't find the message quoted. You can only reply to last ${state.settings.lastMessageStorage} messages. Sending the message without the quoted message.");
+                message.channel.send(`Couldn't find the message quoted. You can only reply to last ${state.settings.lastMessageStorage} messages. Sending the message without the quoted message.`);
             }
         }
 
@@ -937,7 +938,7 @@ const connectToWhatsApp = async (retry = 1) => {
         const emojiFallbackText = emojiData.matches.map((entry) => `:${entry.name}:`).join(' ');
 
         let text = utils.whatsapp.convertDiscordFormatting(message.content ?? message.cleanContent ?? '');
-        if (message.reference) {
+        if (!isForwardedFromDiscord && message.reference) {
             // Discord prepends a mention to replies which results in all
             // participants being tagged on WhatsApp. Remove the leading
             // mention so no unintended mass mentions occur.
@@ -977,7 +978,7 @@ const connectToWhatsApp = async (retry = 1) => {
             text = text.replace(/\s{2,}/g, ' ').trim();
         }
 
-        const replyMentionId = message.reference ? message.mentions?.repliedUser?.id : null;
+        const replyMentionId = !isForwardedFromDiscord && message.reference ? message.mentions?.repliedUser?.id : null;
         const { mentionDescriptors, fallbackReplacements } = collectDiscordMentionData(message, replyMentionId);
 
         const linkedMentions = typeof utils.whatsapp.applyDiscordMentionLinks === 'function'
@@ -1000,7 +1001,10 @@ const connectToWhatsApp = async (retry = 1) => {
                 const doc = utils.whatsapp.createDocumentContent(file);
                 if (!doc) continue;
                 if (first) {
-                    const captionText = hasOnlyCustomEmoji ? '' : text;
+                    let captionText = hasOnlyCustomEmoji ? '' : text;
+                    if (isForwardedFromDiscord) {
+                        captionText = captionText ? `Forwarded\n${captionText}` : 'Forwarded';
+                    }
                     if (captionText || mentionJids.length) doc.caption = captionText;
                     if (mentionJids.length) doc.mentions = mentionJids;
                 }
@@ -1028,7 +1032,10 @@ const connectToWhatsApp = async (retry = 1) => {
         }
         const attachmentLinks = attachments.map((file) => file.url).filter(Boolean);
         fallbackParts.push(...attachmentLinks);
-        const finalText = fallbackParts.join(' ').trim();
+        let finalText = fallbackParts.join(' ').trim();
+        if (isForwardedFromDiscord) {
+            finalText = finalText ? `Forwarded\n${finalText}` : 'Forwarded';
+        }
         if (!finalText) {
             return;
         }

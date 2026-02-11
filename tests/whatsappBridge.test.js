@@ -397,6 +397,88 @@ test('Discord raw user and role mentions are converted before forwarding to What
   }
 });
 
+test('Discord replies warn with interpolated message storage size when quoted message is missing', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  const originalLimit = state.settings.lastMessageStorage;
+  try {
+    state.settings.lastMessageStorage = 321;
+    const channelWarnings = [];
+    let quoteAttempts = 0;
+    utils.whatsapp.createQuoteMessage = async (...args) => {
+      quoteAttempts += 1;
+      assert.equal(args[1], 'jid@s.whatsapp.net');
+      return null;
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: 'jid@s.whatsapp.net',
+      message: {
+        id: 'dc-reply-msg',
+        content: 'reply text',
+        cleanContent: 'reply text',
+        reference: { channelId: 'chan-1', messageId: 'msg-1' },
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async (value) => { channelWarnings.push(value); } },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(quoteAttempts, 1);
+    assert.equal(channelWarnings.length, 1);
+    assert.ok(channelWarnings[0].includes('321'));
+    assert.equal(channelWarnings[0].includes('${state.settings.lastMessageStorage}'), false);
+  } finally {
+    state.settings.lastMessageStorage = originalLimit;
+    harness.cleanup();
+  }
+});
+
+test('Discord forwarded messages skip quote lookup and send plain forwarded text to WhatsApp', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    const channelWarnings = [];
+    let quoteAttempts = 0;
+    utils.whatsapp.createQuoteMessage = async () => {
+      quoteAttempts += 1;
+      return null;
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: 'jid@s.whatsapp.net',
+      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
+      message: {
+        id: 'dc-forward-msg',
+        content: '',
+        cleanContent: '',
+        reference: { channelId: 'chan-a', messageId: 'm-1' },
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async (value) => { channelWarnings.push(value); } },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(quoteAttempts, 0);
+    assert.equal(channelWarnings.length, 0);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'Forwarded');
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('oneWay gating blocks Discord -> WhatsApp sends', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b01 }); // WhatsApp -> Discord only
   try {
