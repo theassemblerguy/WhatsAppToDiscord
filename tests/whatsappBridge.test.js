@@ -479,6 +479,51 @@ test('Discord forwarded messages skip quote lookup and send plain forwarded text
   }
 });
 
+test('Discord forwarded snapshots mirror content and attachments to WhatsApp', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    utils.whatsapp.createDocumentContent = (attachment) => ({
+      document: { url: attachment.url },
+      fileName: attachment.name,
+      mimetype: attachment.contentType,
+    });
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: 'jid@s.whatsapp.net',
+      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
+      message: {
+        id: 'dc-forward-snapshot',
+        content: '',
+        cleanContent: '',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        wa2dcForwardSnapshot: {
+          content: 'snapshot text',
+          attachments: [{
+            url: 'https://cdn.discordapp.com/attachments/file.png',
+            name: 'file.png',
+            contentType: 'image/png',
+          }],
+        },
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.document?.url, 'https://cdn.discordapp.com/attachments/file.png');
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.caption, 'Forwarded\nsnapshot text');
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('oneWay gating blocks Discord -> WhatsApp sends', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b01 }); // WhatsApp -> Discord only
   try {

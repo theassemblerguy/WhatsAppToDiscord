@@ -724,6 +724,106 @@ test('WhatsApp forwarded message without resolvable source keeps clean forwarded
   }
 });
 
+test('WhatsApp forwarded message links source channel when quote sourceJid is bridged', async () => {
+  const originalDiscordUtils = {
+    getGuild: utils.discord.getGuild,
+    getControlChannel: utils.discord.getControlChannel,
+    getOrCreateChannel: utils.discord.getOrCreateChannel,
+    safeWebhookSend: utils.discord.safeWebhookSend,
+  };
+  const originalSettings = {
+    Token: state.settings.Token,
+    GuildID: state.settings.GuildID,
+    oneWay: state.settings.oneWay,
+  };
+  const originalChats = { ...state.chats };
+  const originalLastMessages = state.lastMessages;
+  const originalDcClient = state.dcClient;
+
+  try {
+    state.settings.Token = 'TEST_TOKEN';
+    state.settings.GuildID = 'guild';
+    state.settings.oneWay = 0b11;
+    state.lastMessages = {};
+    restoreObject(state.chats, {
+      'source@s.whatsapp.net': { channelId: 'source-channel', id: 'wh-source', token: 'tok', type: 0 },
+      'target@s.whatsapp.net': { channelId: 'target-channel', id: 'wh-target', token: 'tok', type: 0 },
+    });
+
+    utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
+    utils.discord.getControlChannel = async () => ({ send: async () => {} });
+    utils.discord.getOrCreateChannel = async () => ({
+      id: 'wh-1',
+      token: 'token',
+      channel: { type: 'GUILD_TEXT' },
+      channelId: 'target-channel',
+    });
+
+    const sent = [];
+    utils.discord.safeWebhookSend = async (_webhook, args) => {
+      sent.push(args);
+      return {
+        id: `dc-${sent.length}`,
+        channel: { type: 'GUILD_TEXT' },
+        channelId: 'target-channel',
+        guildId: 'guild',
+        url: `https://discord.com/channels/guild/target-channel/dc-${sent.length}`,
+      };
+    };
+
+    class FakeDiscordClient extends EventEmitter {
+      constructor() {
+        super();
+        this.user = { id: 'bot-1' };
+      }
+
+      async login() {
+        queueMicrotask(() => this.emit('ready'));
+        return this;
+      }
+    }
+
+    const fakeClient = new FakeDiscordClient();
+    setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+    const discordHandler = await importDiscordHandler('wa-forwarded-sourcejid');
+    state.dcClient = await discordHandler.start();
+
+    fakeClient.emit('whatsappMessage', {
+      id: 'wa-forward-sourcejid',
+      name: 'Bob',
+      content: 'forward body',
+      channelJid: 'target@s.whatsapp.net',
+      file: null,
+      quote: { id: 'wa-unknown', sourceJid: 'source@s.whatsapp.net' },
+      profilePic: null,
+      isGroup: false,
+      isForwarded: true,
+      isEdit: false,
+    });
+    await delay(0);
+
+    assert.equal(sent.length, 1);
+    const forwardedContent = sent[0]?.content || '';
+    assert.ok(forwardedContent.includes('Forwarded'));
+    assert.ok(forwardedContent.includes('Source: <#source-channel>'));
+    assert.equal(forwardedContent.includes('Jump:'), false);
+  } finally {
+    utils.discord.getGuild = originalDiscordUtils.getGuild;
+    utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+    utils.discord.getOrCreateChannel = originalDiscordUtils.getOrCreateChannel;
+    utils.discord.safeWebhookSend = originalDiscordUtils.safeWebhookSend;
+
+    state.settings.Token = originalSettings.Token;
+    state.settings.GuildID = originalSettings.GuildID;
+    state.settings.oneWay = originalSettings.oneWay;
+    restoreObject(state.chats, originalChats);
+    state.lastMessages = originalLastMessages;
+
+    state.dcClient = originalDcClient;
+    resetClientFactoryOverrides();
+  }
+});
+
 test('Discord bot messages can be blocked from forwarding to WhatsApp', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,

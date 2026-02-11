@@ -189,6 +189,43 @@ const buildDiscordMessageUrl = ({ guildId, channelId, messageId }) => {
   return `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
 };
 
+const normalizeForwardSnapshotAttachment = (attachment, index = 0) => {
+  if (!attachment || typeof attachment !== 'object') return null;
+  const url = attachment.url || attachment.proxy_url || attachment.proxyUrl || null;
+  if (!url || typeof url !== 'string') return null;
+  const id = attachment.id ? String(attachment.id) : `${index + 1}`;
+  const name = attachment.filename || attachment.name || `forwarded-${id}`;
+  const contentType = attachment.content_type || attachment.contentType || 'application/octet-stream';
+  return {
+    url,
+    name,
+    contentType,
+  };
+};
+
+const extractForwardSnapshot = (rawData = {}) => {
+  const snapshots = Array.isArray(rawData.message_snapshots)
+    ? rawData.message_snapshots
+    : (Array.isArray(rawData.messageSnapshots) ? rawData.messageSnapshots : []);
+  if (!snapshots.length) return null;
+
+  const rawSnapshot = snapshots[0] || {};
+  const snapshotMessage = (rawSnapshot?.message && typeof rawSnapshot.message === 'object')
+    ? rawSnapshot.message
+    : ((rawSnapshot?.data && typeof rawSnapshot.data === 'object') ? rawSnapshot.data : rawSnapshot);
+
+  const content = typeof snapshotMessage?.content === 'string'
+    ? snapshotMessage.content
+    : '';
+  const snapshotAttachments = Array.isArray(snapshotMessage?.attachments) ? snapshotMessage.attachments : [];
+  const attachments = snapshotAttachments
+    .map((attachment, index) => normalizeForwardSnapshotAttachment(attachment, index))
+    .filter(Boolean);
+
+  if (!content && !attachments.length) return null;
+  return { content, attachments };
+};
+
 const cacheDiscordMessageLocation = (message, fallbackChannelId = null) => {
   const messageId = message?.id ? String(message.id) : null;
   if (!messageId) return;
@@ -207,9 +244,8 @@ const cacheDiscordMessageLocation = (message, fallbackChannelId = null) => {
   );
 };
 
-const buildForwardContext = (message) => {
+const buildForwardContext = (message, rawContext = null) => {
   const messageType = typeof message.type === 'number' ? Constants.MessageTypes?.[message.type] : message.type;
-  const rawContext = consumeForwardContext(message.id);
   const fallbackIsForwarded = Boolean(message.reference && messageType !== 'REPLY');
   const sourceChannelId = rawContext?.sourceChannelId || message.reference?.channelId || null;
   const sourceMessageId = rawContext?.sourceMessageId || message.reference?.messageId || null;
@@ -225,10 +261,19 @@ const buildForwardContext = (message) => {
 
 const resolveForwardSourceFromQuote = async (message) => {
   const quotedWaId = message?.quote?.id;
-  if (!quotedWaId) return null;
+  const quotedSourceJid = utils.whatsapp.formatJid(message?.quote?.sourceJid);
+  if (!quotedWaId && !quotedSourceJid) return null;
 
-  const mappedDiscordId = state.lastMessages?.[quotedWaId];
-  if (typeof mappedDiscordId !== 'string' || !mappedDiscordId) return null;
+  const mappedDiscordId = quotedWaId ? state.lastMessages?.[quotedWaId] : null;
+  if (typeof mappedDiscordId !== 'string' || !mappedDiscordId) {
+    if (quotedSourceJid && state.chats?.[quotedSourceJid]?.channelId) {
+      return {
+        channelId: state.chats[quotedSourceJid].channelId,
+        url: null,
+      };
+    }
+    return null;
+  }
 
   const cached = discordMessageLocationCache.get(mappedDiscordId);
   if (cached) {
@@ -2589,8 +2634,9 @@ client.on('raw', (packet = {}) => {
   const sourceGuildId = reference.guild_id || reference.guildId || null;
   const hasForwardSignal = snapshots.length > 0;
   const hasSourceReference = Boolean(sourceChannelId || sourceMessageId || sourceGuildId);
+  const snapshot = extractForwardSnapshot(rawData);
 
-  if (!hasForwardSignal && !hasSourceReference) {
+  if (!hasForwardSignal && !hasSourceReference && !snapshot) {
     return;
   }
 
@@ -2603,6 +2649,7 @@ client.on('raw', (packet = {}) => {
       sourceChannelId,
       sourceMessageId,
       sourceGuildId,
+      snapshot,
     },
     DISCORD_FORWARD_CONTEXT_TTL_MS,
   );
@@ -2638,7 +2685,12 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  const forwardContext = buildForwardContext(message);
+  const rawForwardContext = consumeForwardContext(message.id);
+  const forwardContext = buildForwardContext(message, rawForwardContext);
+  const snapshot = rawForwardContext?.snapshot;
+  if (snapshot) {
+    message.wa2dcForwardSnapshot = snapshot;
+  }
   state.waClient.ev.emit('discordMessage', { jid, message, forwardContext });
 });
 

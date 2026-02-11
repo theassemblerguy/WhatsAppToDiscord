@@ -925,6 +925,9 @@ const connectToWhatsApp = async (retry = 1) => {
 
         const isForwardedFromDiscord = Boolean(forwardContext?.isForwarded);
         const options = {};
+        const forwardSnapshot = isForwardedFromDiscord && message?.wa2dcForwardSnapshot
+            ? message.wa2dcForwardSnapshot
+            : null;
 
         if (!isForwardedFromDiscord && message.reference) {
             options.quoted = await utils.whatsapp.createQuoteMessage(message, jid);
@@ -937,7 +940,11 @@ const connectToWhatsApp = async (retry = 1) => {
         const hasOnlyCustomEmoji = emojiData.matches.length > 0 && emojiData.rawWithoutEmoji.trim() === '';
         const emojiFallbackText = emojiData.matches.map((entry) => `:${entry.name}:`).join(' ');
 
-        let text = utils.whatsapp.convertDiscordFormatting(message.content ?? message.cleanContent ?? '');
+        const baseText = message.content ?? message.cleanContent ?? '';
+        let text = utils.whatsapp.convertDiscordFormatting(baseText);
+        if (isForwardedFromDiscord && !text && typeof forwardSnapshot?.content === 'string') {
+            text = utils.whatsapp.convertDiscordFormatting(forwardSnapshot.content);
+        }
         if (!isForwardedFromDiscord && message.reference) {
             // Discord prepends a mention to replies which results in all
             // participants being tagged on WhatsApp. Remove the leading
@@ -963,7 +970,22 @@ const connectToWhatsApp = async (retry = 1) => {
             includeEmojiAttachments: emojiData.matches.length > 0,
             emojiMatches: emojiData.matches,
         });
-        const attachments = media.attachments || [];
+        const attachments = [...(media.attachments || [])];
+        const snapshotAttachments = Array.isArray(forwardSnapshot?.attachments) ? forwardSnapshot.attachments : [];
+        for (const snapshotAttachment of snapshotAttachments) {
+            const url = typeof snapshotAttachment?.url === 'string' ? snapshotAttachment.url : '';
+            if (!url) continue;
+            if (attachments.some((existing) => existing?.url === url)) continue;
+            attachments.push({
+                url,
+                name: typeof snapshotAttachment?.name === 'string' && snapshotAttachment.name.trim()
+                    ? snapshotAttachment.name.trim()
+                    : 'forwarded-attachment',
+                contentType: typeof snapshotAttachment?.contentType === 'string' && snapshotAttachment.contentType
+                    ? snapshotAttachment.contentType
+                    : 'application/octet-stream',
+            });
+        }
         const consumedUrls = media.consumedUrls || [];
         const shouldSendAttachments = state.settings.UploadAttachments && attachments.length > 0;
 

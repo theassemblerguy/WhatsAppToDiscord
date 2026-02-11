@@ -2980,16 +2980,38 @@ const whatsapp = {
     if (!msgType || !msg) return null;
 
     const context = msg.contextInfo;
-    const qMsg = context?.quotedMessage;
-    if (!qMsg) return null;
+    if (!context) return null;
 
-    const qMsgType = this.getMessageType({ message: qMsg });
-
-    const [nMsgType, message] = this.getMessage({ message: qMsg }, qMsgType);
-    const { content } = await this.getContent(message, nMsgType, qMsgType, { mentionTarget: 'name' });
-
-    const quoteParticipant = this.formatJid(context?.participant);
+    const qMsg = context.quotedMessage;
+    const quoteId = context?.stanzaId || context?.placeholderKey?.id || context?.questionReplyQuotedMessage?.stanzaId || null;
+    const quoteSourceJid = this.formatJid(context?.remoteJid || context?.placeholderKey?.remoteJid);
+    const quoteParticipant = this.formatJid(context?.participant || context?.placeholderKey?.participant);
     const quoteParticipantAlt = this.formatJid(context?.participantAlt);
+
+    const getStoredQuoteMessage = async () => {
+      if (!quoteId) return null;
+      const rawRemote = this.formatJid(rawMsg?.key?.remoteJid);
+      const rawRemoteAlt = this.formatJid(rawMsg?.key?.remoteJidAlt || rawMsg?.key?.participantAlt || rawMsg?.remoteJidAlt);
+      const candidates = [...new Set([rawRemote, rawRemoteAlt, quoteSourceJid].filter(Boolean))];
+      for (const remoteCandidate of [...candidates]) {
+        try {
+          const [primary, alternate] = await this.hydrateJidPair(remoteCandidate);
+          [primary, alternate].map((entry) => this.formatJid(entry)).forEach((entry) => {
+            if (entry && !candidates.includes(entry)) candidates.push(entry);
+          });
+        } catch (err) {
+          state.logger?.debug?.({ err }, 'Failed to hydrate quote remote candidate');
+        }
+      }
+      for (const remoteJid of candidates) {
+        const stored = messageStore.get({ remoteJid, id: quoteId });
+        if (stored) return stored;
+      }
+      return null;
+    };
+
+    if (!qMsg && !quoteId) return null;
+
     const quoteNameFromParticipant = async () => {
       const [primary, alternate] = await this.hydrateJidPair(quoteParticipant, quoteParticipantAlt);
       const resolved = this.resolveKnownJid(primary, alternate, quoteParticipant, quoteParticipantAlt)
@@ -3002,31 +3024,49 @@ const whatsapp = {
     };
 
     const quoteNameFromStore = async () => {
-      if (!context?.stanzaId) return null;
-      const rawRemote = this.formatJid(rawMsg?.key?.remoteJid);
-      const rawRemoteAlt = this.formatJid(rawMsg?.key?.remoteJidAlt || rawMsg?.key?.participantAlt || rawMsg?.remoteJidAlt);
-      const [primary, alternate] = await this.hydrateJidPair(rawRemote, rawRemoteAlt);
-      const candidates = [...new Set([rawRemote, rawRemoteAlt, primary, alternate].filter(Boolean))];
-      for (const remoteJid of candidates) {
-        const stored = messageStore.get({ remoteJid, id: context.stanzaId });
-        if (stored) {
-          return this.getSenderName(stored);
-        }
+      const stored = await getStoredQuoteMessage();
+      if (stored) {
+        return this.getSenderName(stored);
       }
       return null;
     };
 
+    if (!qMsg) {
+      const stored = await getStoredQuoteMessage();
+      let content = '';
+      if (stored) {
+        const storedType = this.getMessageType(stored);
+        if (storedType) {
+          const [storedInnerType, storedMessage] = this.getMessage(stored, storedType);
+          const parsed = await this.getContent(storedMessage, storedInnerType, storedType, { mentionTarget: 'name' });
+          content = parsed?.content || '';
+        }
+      }
+      const quote = {
+        name: await quoteNameFromStore() || await quoteNameFromParticipant(),
+        content,
+        file: null,
+      };
+      if (quoteId) quote.id = quoteId;
+      if (quoteSourceJid) quote.sourceJid = quoteSourceJid;
+      return quote;
+    }
+
+    const qMsgType = this.getMessageType({ message: qMsg });
+    const [nMsgType, message] = this.getMessage({ message: qMsg }, qMsgType);
+    const { content } = await this.getContent(message, nMsgType, qMsgType, { mentionTarget: 'name' });
+
     const quoteName = await quoteNameFromStore() || await quoteNameFromParticipant();
     let file = null;
-    if (qMsgType && context?.stanzaId) {
-      const quoteDownloadParticipant = this.formatJid(context?.participant || context?.participantAlt);
+    if (qMsgType && quoteId) {
+      const quoteDownloadParticipant = this.formatJid(context?.participant || context?.participantAlt || context?.placeholderKey?.participant);
       if (context?.participant && context?.participantAlt) {
         this.migrateLegacyJid(context.participantAlt, context.participant);
       }
       const downloadCtx = {
         key: {
-          remoteJid: (await this.getChannelJid(rawMsg)) || rawMsg.key.remoteJid,
-          id: context.stanzaId,
+          remoteJid: quoteSourceJid || (await this.getChannelJid(rawMsg)) || rawMsg.key.remoteJid,
+          id: quoteId,
           fromMe: rawMsg.key.fromMe,
           participant: quoteDownloadParticipant,
         },
@@ -3041,9 +3081,8 @@ const whatsapp = {
       file,
     };
 
-    if (context?.stanzaId) {
-      quote.id = context.stanzaId;
-    }
+    if (quoteId) quote.id = quoteId;
+    if (quoteSourceJid) quote.sourceJid = quoteSourceJid;
 
     return quote;
   },
