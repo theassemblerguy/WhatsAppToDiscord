@@ -63,8 +63,8 @@ const MIME_BY_EXTENSION = {
 const LINK_PREVIEW_FETCH_TIMEOUT_MS = 3000;
 const LINK_PREVIEW_MAX_REDIRECTS = 5;
 const LINK_PREVIEW_FETCH_OPTS = { timeout: LINK_PREVIEW_FETCH_TIMEOUT_MS };
-const LINK_PREVIEW_MAX_BYTES = 1024 * 1024; // 1 MiB
-const LINK_PREVIEW_THUMB_MAX_BYTES = 8 * 1024 * 1024; // 8 MiB
+const LINK_PREVIEW_MAX_BYTES = 1024 * 1024; 
+const LINK_PREVIEW_THUMB_MAX_BYTES = 8 * 1024 * 1024; 
 const EXPLICIT_URL_REGEX = /<?https?:\/\/[^\s>]+>?/i;
 const BARE_URL_REGEX = /(?:^|[\s<])((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[\w\-./?%&=+#]*)?)/i;
 const TRAILING_PUNCTUATION_REGEX = /[)\],.;!?]+$/;
@@ -195,12 +195,12 @@ const isPrivateIPv4Int = (value) => {
   const first = unsigned >>> 24;
   const second = (unsigned >>> 16) & 0xff;
 
-  if (first === 10) return true; // 10.0.0.0/8
-  if (first === 127) return true; // 127.0.0.0/8 (loopback)
-  if (first === 169 && second === 254) return true; // 169.254.0.0/16 (link-local)
-  if (first === 172 && second >= 16 && second <= 31) return true; // 172.16.0.0/12
-  if (first === 192 && second === 168) return true; // 192.168.0.0/16
-  if (first === 0) return true; // 0.0.0.0/8 (software)
+  if (first === 10) return true; 
+  if (first === 127) return true; 
+  if (first === 169 && second === 254) return true; 
+  if (first === 172 && second >= 16 && second <= 31) return true; 
+  if (first === 192 && second === 168) return true; 
+  if (first === 0) return true; 
   return false;
 };
 
@@ -212,16 +212,16 @@ const isBlockedIp = (address = '') => {
   }
   if (ipVersion === 6) {
     const normalized = address.toLowerCase();
-    if (normalized === '::' || normalized === '::1') return true; // unspecified / loopback
+    if (normalized === '::' || normalized === '::1') return true; 
     if (normalized.startsWith('::ffff:')) {
       const tail = normalized.slice('::ffff:'.length);
       if (net.isIP(tail) === 4) return isBlockedIp(tail);
     }
-    // fc00::/7 (unique local)
+    
     if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
-    // fe80::/10 (link-local)
+    
     if (normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb')) return true;
-    // ff00::/8 (multicast)
+    
     if (normalized.startsWith('ff')) return true;
     return false;
   }
@@ -329,9 +329,7 @@ const readBodyWithLimit = async (body, maxBytes) => {
   const chunks = [];
   let total = 0;
   try {
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      // eslint-disable-next-line no-await-in-loop
+    for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
@@ -346,8 +344,8 @@ const readBodyWithLimit = async (body, maxBytes) => {
   } finally {
     try {
       await reader.cancel();
-    } catch {
-      /* ignore */
+    } catch (err) {
+      void err;
     }
   }
   return Buffer.concat(chunks, total);
@@ -380,8 +378,7 @@ const fetchPreviewResponse = async (url, { maxBytes = LINK_PREVIEW_MAX_BYTES } =
   let redirects = 0;
   const shouldFollowRedirect = createRedirectHandler();
 
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
+  for (;;) {
     validatePreviewTargetUrl(currentUrl);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), LINK_PREVIEW_FETCH_TIMEOUT_MS);
@@ -463,8 +460,7 @@ const fetchPreviewBuffer = async (url, {
   let currentUrl = url;
   let redirects = 0;
 
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
+  for (;;) {
     validatePreviewTargetUrl(currentUrl);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), LINK_PREVIEW_FETCH_TIMEOUT_MS);
@@ -546,7 +542,7 @@ const sanitizePathSegment = (name = '', fallback = 'file') => {
   const base = path.basename(raw);
   let normalized = base.replace(/[^\w.-]+/g, '-').replace(/-+/g, '-').slice(0, 128);
 
-  // Windows disallows trailing dots/spaces, and reserved device names (even with extensions).
+  
   normalized = normalized.replace(/[. ]+$/g, '');
   const parsed = path.parse(normalized);
   if (parsed.name && isWindowsReservedBasename(parsed.name)) {
@@ -698,8 +694,8 @@ const createRedirectHandler = () => {
         redirects += 1;
         return true;
       }
-    } catch {
-      /* ignore */
+    } catch (err) {
+      void err;
     }
     return false;
   };
@@ -1038,8 +1034,8 @@ const updater = {
   currentExeName: process.argv0.split(/[/\\]/).pop(),
 
   get supportsSignedSelfUpdate() {
-    // Release signatures are required for safe self-updates. We currently do not
-    // ship signature files for some legacy releases.
+    
+    
     return true;
   },
 
@@ -1286,8 +1282,8 @@ const updater = {
       try {
         await fs.promises.access(backupPath, fs.constants.F_OK);
         return true;
-      } catch {
-        /* try next */
+      } catch (err) {
+        void err;
       }
     }
     return false;
@@ -1574,7 +1570,7 @@ const discord = {
     if (!channel || !text) return;
     const parts = this.partitionText(text);
     for (const part of parts) {
-      // eslint-disable-next-line no-await-in-loop
+      
       await channel.send(part);
     }
   },
@@ -1767,9 +1763,7 @@ const discord = {
 
     let nthCategory = Math.floor((nthChannel + 1) / 50);
 
-    // Keep searching until a valid or new category is available.
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
+    for (;;) {
       if (state.settings.Categories[nthCategory] == null) {
         const categoryName = `whatsapp ${nthCategory + 1}`;
         const category = await guild.channels.create(categoryName, { type: 'GUILD_CATEGORY' });
@@ -1848,7 +1842,7 @@ const discord = {
     if (args && typeof args === 'object' && Object.prototype.hasOwnProperty.call(args, 'username')) {
       const normalized = normalizeWebhookUsername(args.username);
       if (normalized == null) {
-        // Avoid sending invalid webhook username (Discord rejects empty/whitespace usernames).
+        
         args = { ...args };
         delete args.username;
       } else if (normalized !== args.username) {
@@ -2104,7 +2098,7 @@ const discord = {
       return await webhook.editMessage(messageId, args);
     } catch (err) {
       if (err.code === 10008 && err.message.includes('Unknown Message')) {
-        // message was already deleted or never existed
+        
         return null;
       }
       if (err.code === 10015 && err.message.includes('Unknown Webhook')) {
@@ -2132,7 +2126,7 @@ const discord = {
       return await webhook.deleteMessage(messageId);
     } catch (err) {
       if (err.code === 10008 && err.message.includes('Unknown Message')) {
-        // message was already removed, treat as success
+        
         return null;
       }
       if (err.code === 10015 && err.message.includes('Unknown Webhook')) {
@@ -2410,13 +2404,11 @@ const discord = {
     const ext = parsed.ext || '';
 
     let counter = 0;
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
+    for (;;) {
       const suffix = counter === 0 ? '' : `-${counter}`;
       const candidate = `${baseName}${suffix}${ext}`;
       const absPath = path.resolve(dir, candidate);
       try {
-        // eslint-disable-next-line no-await-in-loop
         await fs.promises.stat(absPath);
         counter += 1;
       } catch (err) {
@@ -2479,7 +2471,7 @@ const discord = {
           remaining.push(file);
           continue;
         }
-        // eslint-disable-next-line no-await-in-loop
+        
         const deleted = await deleteFile(file);
         if (!deleted) {
           remaining.push(file);
@@ -2496,7 +2488,7 @@ const discord = {
           remaining.push(file);
           continue;
         }
-        // eslint-disable-next-line no-await-in-loop
+        
         const deleted = await deleteFile(file);
         if (deleted) {
           total -= file.size;
@@ -2527,7 +2519,7 @@ const discord = {
             remaining.push(file);
             continue;
           }
-          // eslint-disable-next-line no-await-in-loop
+          
           const deleted = await deleteFile(file);
           if (deleted) {
             freeBytes += file.size;
@@ -2560,7 +2552,7 @@ const discord = {
         await fs.promises.writeFile(absPath, file.attachment, { mode: 0o600 });
       }
     } catch (err) {
-      // Retry once for transient network errors when we can recreate the stream.
+      
       const canRetry = !!file.downloadCtx;
       if (canRetry) {
         state.logger?.warn({ err, file: file.name }, 'Retrying WhatsApp media download after failure');
@@ -2794,7 +2786,7 @@ const whatsapp = {
       const digits = trimmed.replace(/\D/g, '');
       if (digits) return this.formatJid(`${digits}@s.whatsapp.net`);
     }
-    // eslint-disable-next-line no-restricted-globals
+    
     if (!isNaN(trimmed)) { return this.formatJid(`${trimmed}@s.whatsapp.net`); }
     if (trimmed.includes('@')) {
       return this.formatJid(trimmed);
@@ -2864,7 +2856,7 @@ const whatsapp = {
       }
     }
 
-    // Support phone-number tokens like "@14155550123" (or "@+14155550123").
+    
     const phoneMentionRegex = /@(\+?\d{7,15})(?=\W|$)/g;
     let match;
     while ((match = phoneMentionRegex.exec(cleaned)) !== null) {
@@ -2897,7 +2889,7 @@ const whatsapp = {
 
     const store = state.waClient?.signalRepository?.lidMapping;
 
-    // Outgoing mentions: prefer PN JIDs where possible (most compatible).
+    
     if (this.isPhoneJid(formatted)) return formatted;
     if (this.isLidJid(formatted) && store && typeof store.getPNForLID === 'function') {
       try {
@@ -3231,7 +3223,7 @@ const whatsapp = {
       }
       return {
         name: this.getFilename(msg, nMsgType),
-        // Download media as a stream to avoid buffering entire files in memory
+        
         attachment: await downloadMediaMessage(rawMsg, 'stream', {}, {
           logger: state.logger,
           reuploadRequest: state.waClient.updateMediaMessage,
@@ -3242,8 +3234,8 @@ const whatsapp = {
       };
     } catch (err) {
       if (err?.message?.includes('Unrecognised filter type') || err?.message?.includes('Unrecognized filter type')) {
-        // Jimp sometimes throws this error when a PNG file is corrupted or malformed.
-        // Avoid spamming the log with a stack trace for such cases.
+        
+        
         state.logger?.warn('Skipped sending attachment due to an invalid PNG file');
       } else {
         state.logger?.error(err);
@@ -3419,8 +3411,8 @@ const whatsapp = {
       const jids = [formatted, primary, alternate, resolved].filter(Boolean);
       if (found) return { discordUserId: found.discordUserId, jids: [...jids, ...found.keys] };
 
-      // Fallback: if WhatsApp provides LID JIDs but the PN<->LID mapping store
-      // can't resolve it, try matching based on the stored contact name.
+      
+      
       const mentionName = getStoredContactName(formatted)
         || getStoredContactName(resolvedCandidate)
         || getStoredContactName(primary)
@@ -3705,7 +3697,7 @@ const whatsapp = {
     const files = await fs.promises.readdir(dir).catch(() => []);
     for (const file of files) {
       const fullPath = path.join(dir, file);
-      // Best-effort legacy cleanup for pre-SQLite auth stores.
+      
       await fs.promises.rm(fullPath, { recursive: true, force: true }).catch(() => {});
     }
   }

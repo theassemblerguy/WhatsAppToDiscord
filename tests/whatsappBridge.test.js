@@ -691,7 +691,7 @@ test('Discord forwarded snapshots resolve user and role mentions from raw tokens
 });
 
 test('oneWay gating blocks Discord -> WhatsApp sends', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b01 }); // WhatsApp -> Discord only
+  const harness = await setupWhatsAppHarness({ oneWay: 0b01 }); 
   try {
     harness.fakeClient.ev.emit('discordDelete', { jid: 'jid@s.whatsapp.net', id: 'wa-msg' });
     harness.fakeClient.ev.emit('discordEdit', {

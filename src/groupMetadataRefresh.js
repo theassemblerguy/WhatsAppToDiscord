@@ -13,8 +13,8 @@ const createGroupRefreshScheduler = ({ refreshFn, delayMs = DEFAULT_DELAY_MS } =
       timers.delete(key);
       try {
         await refreshFn(key);
-      } catch {
-        /* best-effort */
+      } catch (err) {
+        void err;
       }
     }, delayMs);
     timers.set(key, timer);

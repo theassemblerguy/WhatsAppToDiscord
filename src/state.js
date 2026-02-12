@@ -55,26 +55,13 @@ const state = {
   startTime: 0,
   logger: null,
   lastMessages: null,
-  /**
-   * Stores WhatsApp message IDs that originate from Discord so that
-   * they are not echoed back to Discord when received from WhatsApp.
-  */
+  
   sentMessages: new Set(),
-  /**
-   * Tracks Discord reactions that mirror WhatsApp reactions so we can
-   * update or remove them when WhatsApp users change their reaction.
-   * Structure: { [discordMessageId]: { [waJid]: emoji } }
-   */
+  
   reactions: {},
-  /**
-   * Stores WhatsApp message IDs for reactions originating from Discord
-   * to avoid echoing them back when WhatsApp sends confirmation events.
-   */
+  
   sentReactions: new Set(),
-  /**
-   * Tracks pin actions we initiated to avoid echoing them back when
-   * WhatsApp emits pin-in-chat events.
-   */
+  
   sentPins: new Set(),
   goccRuns: {},
   updateInfo: null,

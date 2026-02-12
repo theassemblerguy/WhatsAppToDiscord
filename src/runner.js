@@ -41,7 +41,7 @@ async function runWorker() {
       await chmodAsync(childPath, 0o755);
     } catch (err) {
       if (err?.code !== 'ENOENT') {
-        // Best-effort: log but continue to attempt to start anyway.
+        
         console.warn({ err, childPath }, 'Failed to ensure child binary is executable');
       }
     }
@@ -301,7 +301,7 @@ async function main() {
   }
 
   const clusterExecArgv = process.pkg ? [] : ['--no-deprecation'];
-  // `silent: true` pipes worker stdout/stderr so we can tee them into terminal.log.
+  
   cluster.setupPrimary({ execArgv: clusterExecArgv, silent: true });
 
   const logger = setupSupervisorLogging();
@@ -392,8 +392,8 @@ async function main() {
       if (child?.stdin) {
         try {
           process.stdin.unpipe(child.stdin);
-        } catch {
-          // Ignore unpipe errors (worker may already be gone).
+        } catch (err) {
+          void err;
         }
       }
       currentWorker = null;

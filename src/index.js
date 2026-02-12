@@ -46,7 +46,7 @@ if (!globalThis.crypto) {
         logs = await fs.promises.readFile('logs.txt', 'utf8');
         logs = logs.split('\n').slice(-20).join('\n');
       } catch (readErr) {
-        // ignore read errors
+        void readErr;
       }
       const content = `Bot crashed: \n\n\u0060\u0060\u0060\n${err?.stack || err}\n\u0060\u0060\u0060` +
         (logs ? `\nRecent logs:\n\u0060\u0060\u0060\n${logs}\n\u0060\u0060\u0060` : '');
@@ -143,7 +143,7 @@ if (!globalThis.crypto) {
   }
 
   if (!isSmokeTest) {
-    // Send any queued crash report
+    
     try {
       const crashFile = 'crash-report.txt';
       const queued = await fs.promises.readFile(crashFile, 'utf8');

@@ -80,7 +80,7 @@ test('Discord typing updates WhatsApp presence', async () => {
     state.dcClient = await discordHandler.start();
 
     fakeClient.emit('typingStart', { channel: { id: 'chan-1' } });
-    // Allow the async typing handler to schedule its paused timer.
+    
     await Promise.resolve();
     await delay(0);
 
@@ -128,7 +128,7 @@ test('oneWay gating blocks WhatsApp -> Discord forwards in discordHandler', asyn
   try {
     state.settings.Token = 'TEST_TOKEN';
     state.settings.GuildID = 'guild';
-    state.settings.oneWay = 0b10; // Discord -> WhatsApp only
+    state.settings.oneWay = 0b10; 
 
     utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
     utils.discord.getControlChannel = async () => ({ send: async () => {} });
@@ -251,7 +251,7 @@ test('WhatsApp sender platform suffix appends to mirrored Discord messages', asy
     state.dcClient = await discordHandler.start();
 
     fakeClient.emit('whatsappMessage', {
-      id: 'a'.repeat(21), // Baileys getDevice() predicts this as Android.
+      id: 'a'.repeat(21), 
       name: 'Tester',
       content: 'hello',
       channelJid: 'jid@s.whatsapp.net',
@@ -1087,7 +1087,7 @@ test('Discord broadcast/crosspost webhooks require redirectannouncements when re
     const discordHandler = await importDiscordHandler('broadcast-webhook-forward');
     state.dcClient = await discordHandler.start();
 
-    // Bridge webhooks should remain blocked to prevent echo loops.
+    
     fakeClient.emit('messageCreate', {
       id: 'bridge-webhook-msg',
       author: { id: 'bot-3', bot: true },
@@ -1100,7 +1100,7 @@ test('Discord broadcast/crosspost webhooks require redirectannouncements when re
     await delay(0);
     assert.equal(waEvents.length, 0);
 
-    // Crossposted/broadcast webhook should be blocked by default.
+    
     fakeClient.emit('messageCreate', {
       id: 'external-webhook-msg',
       author: { id: 'bot-4', bot: true },
@@ -1113,7 +1113,7 @@ test('Discord broadcast/crosspost webhooks require redirectannouncements when re
     await delay(0);
     assert.equal(waEvents.length, 0);
 
-    // Enabling redirectannouncements should allow it.
+    
     state.settings.redirectAnnouncementWebhooks = true;
     fakeClient.emit('messageCreate', {
       id: 'external-webhook-msg-2',

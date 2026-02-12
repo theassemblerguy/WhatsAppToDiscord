@@ -1,6 +1,6 @@
 import sqliteStore from './persistence/sqliteStore.js';
 
-const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7d
+const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000; 
 const DEFAULT_MAX_ENTRIES = 10000;
 
 const buildKey = (key = {}) => {

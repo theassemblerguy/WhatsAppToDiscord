@@ -38,7 +38,7 @@ test('download filename sanitization avoids Windows reserved names and trailing 
     ];
 
     for (const input of inputs) {
-      // eslint-disable-next-line no-await-in-loop
+      
       const [absPath, safeName] = await utils.discord.findAvailableName(tempDir, input);
       assert.equal(absPath, path.resolve(tempDir, safeName));
       assertWindowsSafeFileName(safeName);

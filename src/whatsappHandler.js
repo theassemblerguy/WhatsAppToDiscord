@@ -431,7 +431,7 @@ const refreshGroupMetadata = async (client, groupId) => {
         const level = isRateLimit ? 'debug' : 'warn';
         state.logger?.[level]?.({ err, groupId: normalizedId }, 'Failed to refresh group metadata');
         if (isRateLimit) {
-            // avoid thrashing: back off further for this group
+            
             groupRefreshLastRun.set(normalizedId, now + minGapMs);
         }
         return null;
@@ -493,12 +493,12 @@ const ensureSignalStoreSupport = async (keyStore) => {
     const requiredKeys = ['tctoken', 'lid-mapping', 'device-list', 'device-index'];
     for (const key of requiredKeys) {
         try {
-            // Baileys expects a map for each category; ensure the file exists so new
-            // rc.8+ entries (like tctoken and lid-mapping) can be written safely.
-            // eslint-disable-next-line no-await-in-loop
+            
+            
+            
             const existing = await keyStore.get(key, []);
             if (existing == null) {
-                // eslint-disable-next-line no-await-in-loop
+                
                 await keyStore.set({ [key]: {} });
             }
         } catch (err) {
@@ -519,7 +519,7 @@ const migrateLegacyChats = async (client) => {
         for (const lidJid of lidJids) {
             let pnJid = mappings?.[lidJid];
             if (!pnJid && typeof store.getPNForLID === 'function') {
-                // eslint-disable-next-line no-await-in-loop
+                
                 pnJid = await store.getPNForLID(lidJid);
             }
             const formattedPn = utils.whatsapp.formatJid(pnJid);
@@ -566,7 +566,7 @@ const connectToWhatsApp = async (retry = 1) => {
         getMessage: async (key) => {
             const stored = await getStoredMessageWithJidFallback({ ...key, remoteJid: utils.whatsapp.formatJid(key?.remoteJid) });
             if (!stored) return null;
-            // Baileys expects proto.Message for some features (e.g., poll decryption).
+            
             return stored.message || stored;
         },
         browser: ["Firefox (Linux)", "", ""]
@@ -614,7 +614,7 @@ const connectToWhatsApp = async (retry = 1) => {
                 return;
             } else if (connection === 'open') {
                 state.waClient = client;
-                // eslint-disable-next-line no-param-reassign
+                
                 retry = 1;
                 await sendControlMessage('WhatsApp connection successfully opened!');
 
@@ -1009,9 +1009,9 @@ const connectToWhatsApp = async (retry = 1) => {
             text = text ? `${text}\n${embedText}` : embedText;
         }
         if (!isForwardedFromDiscord && message.reference) {
-            // Discord prepends a mention to replies which results in all
-            // participants being tagged on WhatsApp. Remove the leading
-            // mention so no unintended mass mentions occur.
+            
+            
+            
             text = text.replace(/^(<@!?\d+>|@\S+)\s*/, '');
         }
         if (text && typeof text.normalize === 'function') {
@@ -1189,8 +1189,8 @@ const connectToWhatsApp = async (retry = 1) => {
             text = text ? `${text}\n${embedText}` : embedText;
         }
         if (message.reference) {
-            // Remove Discord's automatic reply mention to avoid tagging
-            // every participant on WhatsApp when editing a reply.
+            
+            
             text = text.replace(/^(<@!?\d+>|@\S+)\s*/, '');
         }
         if (text && typeof text.normalize === 'function') {

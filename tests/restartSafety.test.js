@@ -48,7 +48,7 @@ class FakeWhatsAppClient {
 
 const waitFor = async (predicate, { timeoutMs = 750, intervalMs = 5 } = {}) => {
   const deadline = Date.now() + timeoutMs;
-  // eslint-disable-next-line no-constant-condition
+  
   while (true) {
     if (predicate()) {
       return true;
@@ -56,7 +56,7 @@ const waitFor = async (predicate, { timeoutMs = 750, intervalMs = 5 } = {}) => {
     if (Date.now() >= deadline) {
       return false;
     }
-    // eslint-disable-next-line no-await-in-loop
+    
     await delay(intervalMs);
   }
 };
