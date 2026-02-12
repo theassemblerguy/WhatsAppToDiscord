@@ -32,11 +32,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run bundle
 
-      - name: Run bundled watchdog smoke (out.cjs)
+      - name: Run bundled watchdog smoke (out.js)
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: |
           tmp="$(mktemp -d)"
-          (cd "$tmp" && WA2DC_SMOKE_TEST=1 node "$GITHUB_WORKSPACE/out.cjs")
+          (cd "$tmp" && WA2DC_SMOKE_TEST=1 node "$GITHUB_WORKSPACE/out.js")
 
       - name: Build and smoke-test Windows packaged binary
         if: matrix.os == 'windows-latest' && matrix.node == 24
