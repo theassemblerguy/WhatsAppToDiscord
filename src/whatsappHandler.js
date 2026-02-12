@@ -1079,21 +1079,32 @@ const connectToWhatsApp = async (retry = 1) => {
             emojiMatches: emojiData.matches,
             includeEmbedAttachments: embedMirroringEnabled,
         });
-        const attachments = [...(media.attachments || [])];
+        const normalizeAttachmentUrl = (value = '') => {
+            if (typeof utils.discord.normalizeAttachmentUrl === 'function') {
+                return utils.discord.normalizeAttachmentUrl(value);
+            }
+            return typeof value === 'string' ? value : '';
+        };
+        let attachments = [...(media.attachments || [])];
+        const hasAttachmentUrl = (url) => {
+            const normalizedUrl = normalizeAttachmentUrl(url);
+            if (!normalizedUrl) return false;
+            return attachments.some((existing) => normalizeAttachmentUrl(existing?.url) === normalizedUrl);
+        };
         const snapshotEmbedMedia = embedMirroringEnabled && snapshotEmbeds.length
             ? utils.discord.collectMessageMedia({ embeds: snapshotEmbeds }, { includeEmbedAttachments: true })
             : { attachments: [], consumedUrls: [] };
         for (const snapshotEmbedAttachment of (snapshotEmbedMedia.attachments || [])) {
             const url = typeof snapshotEmbedAttachment?.url === 'string' ? snapshotEmbedAttachment.url : '';
             if (!url) continue;
-            if (attachments.some((existing) => existing?.url === url)) continue;
+            if (hasAttachmentUrl(url)) continue;
             attachments.push(snapshotEmbedAttachment);
         }
         const snapshotAttachments = Array.isArray(forwardSnapshot?.attachments) ? forwardSnapshot.attachments : [];
         for (const snapshotAttachment of snapshotAttachments) {
             const url = typeof snapshotAttachment?.url === 'string' ? snapshotAttachment.url : '';
             if (!url) continue;
-            if (attachments.some((existing) => existing?.url === url)) continue;
+            if (hasAttachmentUrl(url)) continue;
             attachments.push({
                 url,
                 name: typeof snapshotAttachment?.name === 'string' && snapshotAttachment.name.trim()
@@ -1103,6 +1114,9 @@ const connectToWhatsApp = async (retry = 1) => {
                     ? snapshotAttachment.contentType
                     : 'application/octet-stream',
             });
+        }
+        if (typeof utils.discord.dedupeCollectedAttachments === 'function') {
+            attachments = utils.discord.dedupeCollectedAttachments(attachments);
         }
         const consumedUrls = [...(media.consumedUrls || []), ...(snapshotEmbedMedia.consumedUrls || [])];
         const shouldSendAttachments = state.settings.UploadAttachments && attachments.length > 0;

@@ -1657,6 +1657,12 @@ const discord = {
     }
     return { text: updated, matched: candidate, normalized };
   },
+  normalizeAttachmentUrl(url = '') {
+    return normalizeAttachmentUrlForDedupe(url);
+  },
+  dedupeCollectedAttachments(attachments = []) {
+    return dedupeAttachments(attachments);
+  },
   extractCustomEmojiData(message) {
     const content = message?.content ?? '';
     if (!content) {

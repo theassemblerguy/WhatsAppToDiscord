@@ -801,6 +801,59 @@ test('Discord forwarded snapshot embeds can be mirrored to WhatsApp', async () =
   }
 });
 
+test('Discord forwarded snapshot embeds do not duplicate attachment media', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
+  try {
+    state.settings.DiscordEmbedsToWhatsApp = true;
+    utils.whatsapp.createDocumentContent = (attachment) => ({
+      document: { url: attachment.url },
+      fileName: attachment.name,
+      mimetype: attachment.contentType,
+    });
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: 'jid@s.whatsapp.net',
+      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
+      message: {
+        id: 'dc-forward-snapshot-embed-dedupe',
+        content: '',
+        cleanContent: '',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        wa2dcForwardSnapshot: {
+          content: '',
+          attachments: [{
+            url: 'https://cdn.discordapp.com/attachments/123/456/snapshot-embed.png?ex=abc&is=def&hm=123',
+            name: 'snapshot-embed.png',
+            contentType: 'image/png',
+          }],
+          embeds: [{
+            title: 'Snapshot Embed',
+            image: {
+              proxyURL: 'https://media.discordapp.net/attachments/123/456/snapshot-embed.png?width=1024&height=1024',
+            },
+          }],
+        },
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.ok(harness.fakeClient.sendCalls[0]?.content?.document?.url);
+  } finally {
+    state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
+    harness.cleanup();
+  }
+});
+
 test('Discord forwarded snapshots resolve user and role mentions from raw tokens', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   const originalMentionLinks = { ...(state.settings.WhatsAppDiscordMentionLinks || {}) };
