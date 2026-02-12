@@ -914,6 +914,99 @@ test('Discord forwarded snapshots resolve user and role mentions from raw tokens
   }
 });
 
+test('Discord replies to newsletter chats skip WhatsApp quote lookup', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    const channelWarnings = [];
+    let quoteAttempts = 0;
+    utils.whatsapp.createQuoteMessage = async () => {
+      quoteAttempts += 1;
+      return null;
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '120363123456789@newsletter',
+      message: {
+        id: 'dc-newsletter-reply',
+        content: 'newsletter post',
+        cleanContent: 'newsletter post',
+        reference: { channelId: 'chan-1', messageId: 'msg-1' },
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async (value) => { channelWarnings.push(value); } },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(quoteAttempts, 0);
+    assert.equal(channelWarnings.length, 0);
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'newsletter post');
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('Newsletter attachment failures fall back to text/link send', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    utils.whatsapp.createDocumentContent = (attachment) => ({
+      document: { url: attachment.url },
+      fileName: attachment.name,
+      mimetype: attachment.contentType,
+    });
+
+    harness.fakeClient.sendMessage = async (jid, content, options) => {
+      harness.fakeClient.sendCalls.push({ jid, content, options });
+      if (content?.document) {
+        throw new Error('newsletter media rejected');
+      }
+      harness.fakeClient._sendCounter += 1;
+      return { key: { id: `sent-${harness.fakeClient._sendCounter}`, remoteJid: jid } };
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '120363123456789@newsletter',
+      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
+      message: {
+        id: 'dc-newsletter-attachment-fallback',
+        content: '',
+        cleanContent: '',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        wa2dcForwardSnapshot: {
+          content: 'snapshot text',
+          attachments: [{
+            url: 'https://cdn.discordapp.com/attachments/file.png',
+            name: 'file.png',
+            contentType: 'image/png',
+          }],
+        },
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 2);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.document?.url, 'https://cdn.discordapp.com/attachments/file.png');
+    assert.equal(harness.fakeClient.sendCalls[1]?.content?.text, 'Forwarded\nsnapshot text https://cdn.discordapp.com/attachments/file.png');
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('oneWay gating blocks Discord -> WhatsApp sends', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b01 });
   try {

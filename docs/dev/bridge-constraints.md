@@ -42,3 +42,5 @@ Routing may be restricted by deployment settings. Message-flow changes must pres
 - helper checks via `utils.whatsapp.inWhitelist(...)`
 - broadcast delivery mode for WhatsApp `@broadcast` chats (`sendMessage(..., ..., { broadcast: true })`
   on Discord -> WhatsApp sends)
+- newsletter delivery mode for WhatsApp `@newsletter` chats:
+  use standard `sendMessage`, skip quote threading, and prefer text/link fallback when media send fails

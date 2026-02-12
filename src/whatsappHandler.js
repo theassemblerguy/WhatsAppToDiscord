@@ -130,6 +130,7 @@ const getStoredMessageWithJidFallback = async (key = {}) => {
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const isBroadcastJid = (jid = '') => typeof jid === 'string' && jid.endsWith('@broadcast');
+const isNewsletterJid = (jid = '') => typeof jid === 'string' && jid.endsWith('@newsletter');
 const buildSendOptionsForJid = (jid) => {
     const normalizedJid = utils.whatsapp.formatJid(jid) || jid;
     return isBroadcastJid(normalizedJid) ? { broadcast: true } : {};
@@ -1013,6 +1014,8 @@ const connectToWhatsApp = async (retry = 1) => {
             return;
         }
 
+        const normalizedJid = utils.whatsapp.formatJid(jid) || jid;
+        const isNewsletterChat = isNewsletterJid(normalizedJid);
         const isForwardedFromDiscord = Boolean(forwardContext?.isForwarded);
         const options = buildSendOptionsForJid(jid);
         const forwardSnapshot = isForwardedFromDiscord && message?.wa2dcForwardSnapshot
@@ -1020,7 +1023,7 @@ const connectToWhatsApp = async (retry = 1) => {
             : null;
         const snapshotEmbeds = Array.isArray(forwardSnapshot?.embeds) ? forwardSnapshot.embeds : [];
 
-        if (!isForwardedFromDiscord && message.reference) {
+        if (!isForwardedFromDiscord && message.reference && !isNewsletterChat) {
             options.quoted = await utils.whatsapp.createQuoteMessage(message, jid);
             if (options.quoted == null) {
                 message.channel.send(`Couldn't find the message quoted. You can only reply to last ${state.settings.lastMessageStorage} messages. Sending the message without the quoted message.`);
@@ -1153,16 +1156,19 @@ const connectToWhatsApp = async (retry = 1) => {
 
         if (shouldSendAttachments) {
             let first = true;
+            let sentAnyAttachment = false;
+            let attemptedAttachmentSends = 0;
             for (const file of attachments) {
                 const doc = utils.whatsapp.createDocumentContent(file);
                 if (!doc) continue;
+                attemptedAttachmentSends += 1;
                 if (first) {
                     let captionText = hasOnlyCustomEmoji ? '' : text;
                     if (isForwardedFromDiscord) {
                         captionText = captionText ? `Forwarded\n${captionText}` : 'Forwarded';
                     }
                     if (captionText || mentionJids.length) doc.caption = captionText;
-                    if (mentionJids.length) doc.mentions = mentionJids;
+                    if (!isNewsletterChat && mentionJids.length) doc.mentions = mentionJids;
                 }
                 try {
                     const sentMessage = await client.sendMessage(jid, doc, first ? options : undefined);
@@ -1170,6 +1176,7 @@ const connectToWhatsApp = async (retry = 1) => {
                     state.lastMessages[sentMessage.key.id] = message.id;
                     state.sentMessages.add(sentMessage.key.id);
                     storeMessage(sentMessage);
+                    sentAnyAttachment = true;
                 } catch (err) {
                     state.logger?.error(err);
                 }
@@ -1177,7 +1184,16 @@ const connectToWhatsApp = async (retry = 1) => {
                     first = false;
                 }
             }
-            return;
+            if (sentAnyAttachment) {
+                return;
+            }
+            if (attemptedAttachmentSends > 0) {
+                state.logger?.warn?.({
+                    jid: normalizedJid,
+                    discordMessageId: message.id,
+                    attachments: attemptedAttachmentSends,
+                }, 'All attachment sends failed; falling back to text/link send');
+            }
         }
 
         const fallbackParts = [];
@@ -1197,17 +1213,19 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         const content = { text: finalText };
-        if (mentionJids.length) {
+        if (!isNewsletterChat && mentionJids.length) {
             content.mentions = mentionJids;
         }
         let preview = null;
-        try {
-            preview = await utils.whatsapp.generateLinkPreview(finalText, {
-                uploadImage: typeof client.waUploadToServer === 'function' ? client.waUploadToServer : undefined,
-                logger: state.logger,
-            });
-        } catch (err) {
-            state.logger?.warn({ err }, 'Failed to generate Discord link preview payload');
+        if (!isNewsletterChat) {
+            try {
+                preview = await utils.whatsapp.generateLinkPreview(finalText, {
+                    uploadImage: typeof client.waUploadToServer === 'function' ? client.waUploadToServer : undefined,
+                    logger: state.logger,
+                });
+            } catch (err) {
+                state.logger?.warn({ err }, 'Failed to generate Discord link preview payload');
+            }
         }
         if (preview) {
             content.linkPreview = preview;
@@ -1222,6 +1240,18 @@ const connectToWhatsApp = async (retry = 1) => {
             storeMessage(sent);
         } catch (err) {
             state.logger?.error(err);
+            if (isNewsletterChat) {
+                const metadata = typeof client.newsletterMetadata === 'function'
+                    ? await client.newsletterMetadata('jid', normalizedJid).catch(() => null)
+                    : null;
+                const role = metadata?.viewer_metadata?.role || metadata?.viewerMetadata?.role;
+                const roleHint = role && !['OWNER', 'ADMIN'].includes(role)
+                    ? ` Current account role: ${role}.`
+                    : '';
+                await message.channel?.send(
+                    `Couldn't send to WhatsApp channel ${normalizedJid}.${roleHint} Newsletters require OWNER/ADMIN posting rights and may reject some media types.`,
+                ).catch(() => {});
+            }
         }
     });
 
