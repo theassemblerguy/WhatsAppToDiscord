@@ -40,6 +40,47 @@ Notes: Poll messages and live vote updates are mirrored to Discord, voting can o
 Set the default expiration time (24h, 7d, or 30d) for WhatsApp pins created from Discord.  
 Usage: `/setpinduration duration:<24h|7d|30d>`
 
+### Newsletters
+
+Once a newsletter is linked to a Discord channel, regular messages/media flow through the bridge normally (no special send command needed).
+
+### `/newslettercreate`
+Create a WhatsApp newsletter and automatically link it to a Discord channel.  
+Usage: `/newslettercreate name:"title" description:"optional text"`
+
+### `/newsletterupdate`
+Update a newsletter's name and/or description.  
+Usage: `/newsletterupdate jid:<optional ...@newsletter> name:"optional" description:"optional"`  
+If `jid` is omitted, the current channel must already be linked to a newsletter.
+
+### `/newsletterpicture`
+Set or remove the newsletter picture.  
+Usage: `/newsletterpicture mode:<set|remove> url:<required when mode=set> jid:<optional ...@newsletter>`
+
+### `/newsletteradmincount`
+Fetch the newsletter admin count.  
+Usage: `/newsletteradmincount jid:<optional ...@newsletter>`
+
+### `/newslettermute`
+Mute a newsletter.  
+Usage: `/newslettermute jid:<optional ...@newsletter>`
+
+### `/newsletterunmute`
+Unmute a newsletter.  
+Usage: `/newsletterunmute jid:<optional ...@newsletter>`
+
+### `/newslettermessages`
+Fetch recent messages from a newsletter.  
+Usage: `/newslettermessages jid:<optional ...@newsletter> count:<1-50> before:<unix seconds> after:<unix seconds>`
+
+### `/newslettermetadata`
+Fetch raw newsletter metadata (including viewer role if exposed by WhatsApp).  
+Usage: `/newslettermetadata jid:<optional ...@newsletter>`
+
+### `/newsletterdelete`
+Delete a newsletter (irreversible) and remove its local bridge mapping.  
+Usage: `/newsletterdelete confirm:true jid:<optional ...@newsletter>`
+
 ---
 
 ## Whitelist Controls

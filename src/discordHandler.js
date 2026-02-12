@@ -1131,6 +1131,69 @@ client.on('whatsappPin', async ({ jid, key, pinned }) => {
 });
 
 const { ApplicationCommandOptionTypes } = Constants;
+const isNewsletterJid = (jid = '') => typeof jid === 'string' && jid.endsWith('@newsletter');
+
+const formatJsonForReply = (value) => {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+};
+
+const formatNewsletterJidForReply = (jid) => utils.whatsapp.formatJidForDisplay(jid) || jid;
+
+const extractNewsletterJid = (result) => {
+  const candidates = [
+    result?.jid,
+    result?.id,
+    result?.newsletterJid,
+    result?.newsletter_jid,
+    result?.newsletterId,
+    result?.newsletter?.jid,
+    result?.newsletter?.id,
+    result?.newsletterMetadata?.id,
+    result?.newsletter_metadata?.id,
+    result?.threadMetadata?.id,
+    result?.thread_metadata?.id,
+  ];
+  for (const candidate of candidates) {
+    const normalized = utils.whatsapp.formatJid(candidate);
+    if (isNewsletterJid(normalized)) {
+      return normalized;
+    }
+  }
+  return null;
+};
+
+const resolveNewsletterJidFromCommand = async (ctx, { optionName = 'jid' } = {}) => {
+  const rawOption = ctx.getStringOption(optionName);
+  let jid = null;
+  if (rawOption) {
+    jid = utils.whatsapp.formatJid(utils.whatsapp.toJid(rawOption) || rawOption);
+  } else {
+    jid = utils.whatsapp.formatJid(utils.discord.channelIdToJid(ctx.channel?.id));
+  }
+
+  if (!jid) {
+    await ctx.reply('This command must run in a channel linked to a newsletter, or include `jid:<...@newsletter>`.');
+    return null;
+  }
+  if (!isNewsletterJid(jid)) {
+    await ctx.reply(`\`${formatNewsletterJidForReply(jid)}\` is not a WhatsApp newsletter JID.`);
+    return null;
+  }
+  return jid;
+};
+
+const requireNewsletterMethod = async (ctx, methodName) => {
+  const method = state.waClient?.[methodName];
+  if (typeof method !== 'function') {
+    await ctx.reply(`This WA2DC/Baileys build does not expose \`${methodName}()\` for newsletters.`);
+    return null;
+  }
+  return method.bind(state.waClient);
+};
 
 const commandHandlers = {
   ping: {
@@ -1152,7 +1215,9 @@ const commandHandlers = {
       const displayJid = utils.whatsapp.formatJidForDisplay(jid) || jid;
       const type = jid === 'status@broadcast'
         ? 'Status'
-        : (jid.endsWith('@g.us') ? 'Group' : 'DM');
+        : (jid.endsWith('@g.us')
+          ? 'Group'
+          : (isNewsletterJid(jid) ? 'Newsletter' : 'DM'));
 
       await ctx.reply(`Linked chat: **${name}**\nJID: \`${displayJid}\`\nType: ${type}`);
     },
@@ -1214,6 +1279,476 @@ const commandHandlers = {
 
       const channelMention = webhook.channelId ? `<#${webhook.channelId}>` : 'the linked channel';
       await ctx.reply(`Started a conversation in ${channelMention}.`);
+    },
+  },
+  newslettercreate: {
+    description: 'Create a WhatsApp newsletter and link it to a Discord channel.',
+    options: [
+      {
+        name: 'name',
+        description: 'Newsletter name/title.',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: true,
+      },
+      {
+        name: 'description',
+        description: 'Newsletter description.',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+    ],
+    async execute(ctx) {
+      const createNewsletter = await requireNewsletterMethod(ctx, 'newsletterCreate');
+      if (!createNewsletter) {
+        return;
+      }
+
+      const name = ctx.getStringOption('name')?.trim();
+      const description = (ctx.getStringOption('description') || '').trim();
+      if (!name) {
+        await ctx.reply('Please provide a newsletter name.');
+        return;
+      }
+
+      let result;
+      try {
+        result = await createNewsletter(name, description);
+      } catch (err) {
+        state.logger?.error({ err }, 'Failed to create newsletter');
+        await ctx.reply('Failed to create the newsletter. Please check logs and try again.');
+        return;
+      }
+
+      const newsletterJid = extractNewsletterJid(result);
+      if (!newsletterJid) {
+        await ctx.replyPartitioned(
+          `Newsletter was created, but WA2DC could not detect the JID from the API response:\n\`\`\`json\n${formatJsonForReply(result)}\n\`\`\``
+        );
+        return;
+      }
+      const newsletterName = result?.name
+        || result?.threadMetadata?.name
+        || result?.thread_metadata?.name
+        || name;
+      if (newsletterName) {
+        state.contacts[newsletterJid] = newsletterName;
+        if (state.waClient?.contacts) {
+          state.waClient.contacts[newsletterJid] = newsletterName;
+        }
+      }
+
+      const webhook = await utils.discord.getOrCreateChannel(newsletterJid);
+      if (!webhook) {
+        await ctx.reply(`Newsletter created as \`${formatNewsletterJidForReply(newsletterJid)}\`, but channel linking failed.`);
+        return;
+      }
+
+      if (state.settings.Whitelist.length && !state.settings.Whitelist.includes(newsletterJid)) {
+        state.settings.Whitelist.push(newsletterJid);
+      }
+
+      const channelMention = webhook.channelId ? `<#${webhook.channelId}>` : 'the linked channel';
+      await ctx.reply(`Created newsletter \`${formatNewsletterJidForReply(newsletterJid)}\` and linked it to ${channelMention}.`);
+    },
+  },
+  newsletterupdate: {
+    description: 'Update newsletter name/description.',
+    options: [
+      {
+        name: 'jid',
+        description: 'Target newsletter JID (optional if this channel is linked).',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+      {
+        name: 'name',
+        description: 'New newsletter name.',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+      {
+        name: 'description',
+        description: 'New newsletter description.',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+    ],
+    async execute(ctx) {
+      const updateNewsletter = await requireNewsletterMethod(ctx, 'newsletterUpdate');
+      if (!updateNewsletter) {
+        return;
+      }
+      const jid = await resolveNewsletterJidFromCommand(ctx);
+      if (!jid) {
+        return;
+      }
+
+      const name = ctx.getStringOption('name')?.trim();
+      const description = ctx.getStringOption('description');
+      const payload = {};
+      if (name) {
+        payload.name = name;
+      }
+      if (typeof description === 'string') {
+        payload.description = description.trim();
+      }
+      if (!Object.keys(payload).length) {
+        await ctx.reply('Provide at least one field to update: `name` and/or `description`.');
+        return;
+      }
+
+      try {
+        await updateNewsletter(jid, payload);
+      } catch (err) {
+        state.logger?.error({ err, jid, payload }, 'Failed to update newsletter');
+        await ctx.reply(`Failed to update newsletter \`${formatNewsletterJidForReply(jid)}\`.`);
+        return;
+      }
+      if (payload.name) {
+        state.contacts[jid] = payload.name;
+        if (state.waClient?.contacts) {
+          state.waClient.contacts[jid] = payload.name;
+        }
+      }
+      await ctx.reply(`Updated newsletter \`${formatNewsletterJidForReply(jid)}\`.`);
+    },
+  },
+  newsletterpicture: {
+    description: 'Set or remove a newsletter picture.',
+    options: [
+      {
+        name: 'mode',
+        description: 'Set a new picture or remove the current one.',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: true,
+        choices: [
+          { name: 'set', value: 'set' },
+          { name: 'remove', value: 'remove' },
+        ],
+      },
+      {
+        name: 'url',
+        description: 'Image URL (required for mode:set).',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+      {
+        name: 'jid',
+        description: 'Target newsletter JID (optional if this channel is linked).',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+    ],
+    async execute(ctx) {
+      const jid = await resolveNewsletterJidFromCommand(ctx);
+      if (!jid) {
+        return;
+      }
+      const mode = ctx.getStringOption('mode');
+      if (mode === 'set') {
+        const setPicture = await requireNewsletterMethod(ctx, 'newsletterUpdatePicture');
+        if (!setPicture) {
+          return;
+        }
+        const url = ctx.getStringOption('url')?.trim();
+        if (!url) {
+          await ctx.reply('`url` is required when `mode` is `set`.');
+          return;
+        }
+        try {
+          await setPicture(jid, { url });
+        } catch (err) {
+          state.logger?.error({ err, jid }, 'Failed to update newsletter picture');
+          await ctx.reply(`Failed to update picture for \`${formatNewsletterJidForReply(jid)}\`.`);
+          return;
+        }
+        await ctx.reply(`Updated picture for \`${formatNewsletterJidForReply(jid)}\`.`);
+        return;
+      }
+
+      const removePicture = await requireNewsletterMethod(ctx, 'newsletterRemovePicture');
+      if (!removePicture) {
+        return;
+      }
+      try {
+        await removePicture(jid);
+      } catch (err) {
+        state.logger?.error({ err, jid }, 'Failed to remove newsletter picture');
+        await ctx.reply(`Failed to remove picture for \`${formatNewsletterJidForReply(jid)}\`.`);
+        return;
+      }
+      await ctx.reply(`Removed picture for \`${formatNewsletterJidForReply(jid)}\`.`);
+    },
+  },
+  newsletteradmincount: {
+    description: 'Get the admin count for a newsletter.',
+    options: [
+      {
+        name: 'jid',
+        description: 'Target newsletter JID (optional if this channel is linked).',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+    ],
+    async execute(ctx) {
+      const getAdminCount = await requireNewsletterMethod(ctx, 'newsletterAdminCount');
+      if (!getAdminCount) {
+        return;
+      }
+      const jid = await resolveNewsletterJidFromCommand(ctx);
+      if (!jid) {
+        return;
+      }
+      let result;
+      try {
+        result = await getAdminCount(jid);
+      } catch (err) {
+        state.logger?.error({ err, jid }, 'Failed to fetch newsletter admin count');
+        await ctx.reply(`Failed to fetch admin count for \`${formatNewsletterJidForReply(jid)}\`.`);
+        return;
+      }
+      const count = Number(result?.count ?? result?.adminCount ?? result?.admins ?? result);
+      if (Number.isFinite(count)) {
+        await ctx.reply(`Admin count for \`${formatNewsletterJidForReply(jid)}\`: ${count}`);
+        return;
+      }
+      await ctx.replyPartitioned(
+        `Admin count response for \`${formatNewsletterJidForReply(jid)}\`:\n\`\`\`json\n${formatJsonForReply(result)}\n\`\`\``
+      );
+    },
+  },
+  newslettermute: {
+    description: 'Mute a newsletter.',
+    options: [
+      {
+        name: 'jid',
+        description: 'Target newsletter JID (optional if this channel is linked).',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+    ],
+    async execute(ctx) {
+      const muteNewsletter = await requireNewsletterMethod(ctx, 'newsletterMute');
+      if (!muteNewsletter) {
+        return;
+      }
+      const jid = await resolveNewsletterJidFromCommand(ctx);
+      if (!jid) {
+        return;
+      }
+      try {
+        await muteNewsletter(jid);
+      } catch (err) {
+        state.logger?.error({ err, jid }, 'Failed to mute newsletter');
+        await ctx.reply(`Failed to mute \`${formatNewsletterJidForReply(jid)}\`.`);
+        return;
+      }
+      await ctx.reply(`Muted \`${formatNewsletterJidForReply(jid)}\`.`);
+    },
+  },
+  newsletterunmute: {
+    description: 'Unmute a newsletter.',
+    options: [
+      {
+        name: 'jid',
+        description: 'Target newsletter JID (optional if this channel is linked).',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+    ],
+    async execute(ctx) {
+      const unmuteNewsletter = await requireNewsletterMethod(ctx, 'newsletterUnmute');
+      if (!unmuteNewsletter) {
+        return;
+      }
+      const jid = await resolveNewsletterJidFromCommand(ctx);
+      if (!jid) {
+        return;
+      }
+      try {
+        await unmuteNewsletter(jid);
+      } catch (err) {
+        state.logger?.error({ err, jid }, 'Failed to unmute newsletter');
+        await ctx.reply(`Failed to unmute \`${formatNewsletterJidForReply(jid)}\`.`);
+        return;
+      }
+      await ctx.reply(`Unmuted \`${formatNewsletterJidForReply(jid)}\`.`);
+    },
+  },
+  newslettermessages: {
+    description: 'Fetch recent messages from a newsletter.',
+    options: [
+      {
+        name: 'jid',
+        description: 'Target newsletter JID (optional if this channel is linked).',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+      {
+        name: 'count',
+        description: 'How many messages to fetch (1-50, default 10).',
+        type: ApplicationCommandOptionTypes.INTEGER,
+        required: false,
+      },
+      {
+        name: 'before',
+        description: 'Optional upper timestamp bound (unix seconds).',
+        type: ApplicationCommandOptionTypes.NUMBER,
+        required: false,
+      },
+      {
+        name: 'after',
+        description: 'Optional lower timestamp bound (unix seconds).',
+        type: ApplicationCommandOptionTypes.NUMBER,
+        required: false,
+      },
+    ],
+    async execute(ctx) {
+      const fetchMessages = await requireNewsletterMethod(ctx, 'newsletterFetchMessages');
+      if (!fetchMessages) {
+        return;
+      }
+      const jid = await resolveNewsletterJidFromCommand(ctx);
+      if (!jid) {
+        return;
+      }
+
+      const rawCount = ctx.getIntegerOption('count');
+      const count = Math.max(1, Math.min(50, Number.isFinite(rawCount) ? rawCount : 10));
+      const beforeRaw = ctx.getNumberOption('before');
+      const afterRaw = ctx.getNumberOption('after');
+      const before = Number.isFinite(beforeRaw) ? Math.trunc(beforeRaw) : undefined;
+      const after = Number.isFinite(afterRaw) ? Math.trunc(afterRaw) : undefined;
+
+      let result;
+      try {
+        result = await fetchMessages(jid, count, before, after);
+      } catch (err) {
+        state.logger?.error({ err, jid, count, before, after }, 'Failed to fetch newsletter messages');
+        await ctx.reply(`Failed to fetch messages for \`${formatNewsletterJidForReply(jid)}\`.`);
+        return;
+      }
+
+      const messages = Array.isArray(result)
+        ? result
+        : (Array.isArray(result?.messages) ? result.messages : []);
+      if (!messages.length) {
+        await ctx.reply(
+          `Fetched 0 messages for \`${formatNewsletterJidForReply(jid)}\` (count=${count}${before ? `, before=${before}` : ''}${after ? `, after=${after}` : ''}).`
+        );
+        return;
+      }
+
+      const lines = [
+        `Fetched ${messages.length} message(s) for \`${formatNewsletterJidForReply(jid)}\`.`,
+      ];
+      messages.slice(0, 10).forEach((entry, idx) => {
+        const id = entry?.id || entry?.messageServerID || entry?.server_id || entry?.key?.id || 'unknown-id';
+        const ts = entry?.timestamp || entry?.messageTimestamp || entry?.ts || null;
+        lines.push(`${idx + 1}. id=${id}${ts ? ` ts=${ts}` : ''}`);
+      });
+      if (messages.length > 10) {
+        lines.push(`...and ${messages.length - 10} more.`);
+      }
+      await ctx.replyPartitioned(lines.join('\n'));
+    },
+  },
+  newslettermetadata: {
+    description: 'Fetch newsletter metadata.',
+    options: [
+      {
+        name: 'jid',
+        description: 'Target newsletter JID (optional if this channel is linked).',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+    ],
+    async execute(ctx) {
+      const fetchMetadata = await requireNewsletterMethod(ctx, 'newsletterMetadata');
+      if (!fetchMetadata) {
+        return;
+      }
+      const jid = await resolveNewsletterJidFromCommand(ctx);
+      if (!jid) {
+        return;
+      }
+
+      let metadata;
+      try {
+        metadata = await fetchMetadata('jid', jid);
+      } catch (err) {
+        state.logger?.error({ err, jid }, 'Failed to fetch newsletter metadata');
+        await ctx.reply(`Failed to fetch metadata for \`${formatNewsletterJidForReply(jid)}\`.`);
+        return;
+      }
+
+      const name = metadata?.name
+        || metadata?.threadMetadata?.name
+        || metadata?.thread_metadata?.name
+        || utils.whatsapp.jidToName(jid);
+      const description = metadata?.description
+        || metadata?.threadMetadata?.description
+        || metadata?.thread_metadata?.description
+        || '';
+      const viewerRole = metadata?.viewerMetadata?.role
+        || metadata?.viewer_metadata?.role
+        || 'UNKNOWN';
+      const lines = [
+        `Newsletter: **${name || 'Unknown'}**`,
+        `JID: \`${formatNewsletterJidForReply(jid)}\``,
+        `Viewer role: ${viewerRole}`,
+      ];
+      if (description) {
+        lines.push(`Description: ${description}`);
+      }
+      lines.push('', 'Raw metadata:', `\`\`\`json\n${formatJsonForReply(metadata)}\n\`\`\``);
+      await ctx.replyPartitioned(lines.join('\n'));
+    },
+  },
+  newsletterdelete: {
+    description: 'Delete a newsletter (irreversible).',
+    options: [
+      {
+        name: 'confirm',
+        description: 'Set to true to confirm deletion.',
+        type: ApplicationCommandOptionTypes.BOOLEAN,
+        required: true,
+      },
+      {
+        name: 'jid',
+        description: 'Target newsletter JID (optional if this channel is linked).',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+    ],
+    async execute(ctx) {
+      const deleteNewsletter = await requireNewsletterMethod(ctx, 'newsletterDelete');
+      if (!deleteNewsletter) {
+        return;
+      }
+      const confirmed = Boolean(ctx.getBooleanOption('confirm'));
+      if (!confirmed) {
+        await ctx.reply('Deletion aborted. Re-run with `confirm:true` to delete the newsletter.');
+        return;
+      }
+
+      const jid = await resolveNewsletterJidFromCommand(ctx);
+      if (!jid) {
+        return;
+      }
+
+      try {
+        await deleteNewsletter(jid);
+      } catch (err) {
+        state.logger?.error({ err, jid }, 'Failed to delete newsletter');
+        await ctx.reply(`Failed to delete \`${formatNewsletterJidForReply(jid)}\`.`);
+        return;
+      }
+
+      state.settings.Whitelist = state.settings.Whitelist.filter((entry) => utils.whatsapp.formatJid(entry) !== jid);
+      delete state.chats[jid];
+      delete state.goccRuns[jid];
+      await ctx.reply(`Deleted newsletter \`${formatNewsletterJidForReply(jid)}\` and removed local bridge mapping.`);
     },
   },
   poll: {
