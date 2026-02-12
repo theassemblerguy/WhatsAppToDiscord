@@ -28,6 +28,12 @@ const CUSTOM_EMOJI_REGEX = /<(a?):([a-zA-Z0-9_]{1,32}):(\d+)>/g;
 const GIF_URL_EXTENSION_REGEX = /\.(gif|mp4|webm)$/i;
 const GIF_PROVIDER_HINTS = ['tenor', 'giphy', 'imgur', 'gyazo'];
 const isKnownGifProvider = (value = '') => GIF_PROVIDER_HINTS.some((hint) => value.includes(hint));
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const buildUnicodeMentionRegex = (token) => new RegExp(
+  `@${escapeRegex(token)}(?=$|\\s|[\\p{P}\\p{S}])`,
+  'giu',
+);
+const buildWordBoundaryMentionRegex = (token) => new RegExp(`@${escapeRegex(token)}(?=\\W|$)`, 'g');
 const MIME_BY_EXTENSION = {
   gif: 'image/gif',
   jpg: 'image/jpeg',
@@ -2907,12 +2913,6 @@ const whatsapp = {
       return { text, mentionJids: [] };
     }
 
-    const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const buildMentionRegex = (token) => new RegExp(
-      `@${escapeRegex(token)}(?=$|\\s|[\\p{P}\\p{S}])`,
-      'giu',
-    );
-
     const mentionJids = new Set();
     let nextText = text;
     const appended = new Set();
@@ -2959,7 +2959,7 @@ const whatsapp = {
       }
 
       for (const token of candidates) {
-        const regex = buildMentionRegex(token);
+        const regex = buildUnicodeMentionRegex(token);
         const updated = nextText.replace(regex, replacementToken);
         if (updated === nextText) continue;
         nextText = updated;
@@ -3484,8 +3484,6 @@ const whatsapp = {
       return phoneFallback || 'Unknown';
     };
 
-    const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const buildMentionRegex = (token) => new RegExp(`@${escapeRegex(token)}(?=\\W|$)`, 'g');
     const trailingMentions = new Set();
 
     for (const jid of mentions) {
@@ -3530,7 +3528,7 @@ const whatsapp = {
 
       let replaced = false;
       for (const token of mentionTextCandidates) {
-        const regex = buildMentionRegex(token);
+        const regex = buildWordBoundaryMentionRegex(token);
         const next = content.replace(regex, replacement);
         if (next === content) continue;
         content = next;
