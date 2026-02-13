@@ -824,11 +824,11 @@ const patchSendMessageForLinkPreviews = (client) => {
         if (!normalizedOptions.logger) {
             normalizedOptions.logger = state.logger;
         }
-        const useNewsletterSpecialFlow = useNewsletterSpecialFlowForJid(sendJid);
-        if (useNewsletterSpecialFlow) {
+        const newsletterChat = isNewsletterJid(sendJid);
+        if (newsletterChat) {
             normalizedOptions.getUrlInfo = undefined;
         }
-        const needsGeneratedPreview = !useNewsletterSpecialFlow && !content?.linkPreview;
+        const needsGeneratedPreview = !newsletterChat && !content?.linkPreview;
         if (needsGeneratedPreview && !normalizedOptions.getUrlInfo) {
             normalizedOptions.getUrlInfo = defaultGetUrlInfo;
         }
@@ -1535,6 +1535,7 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         const targetJid = normalizeSendJid(jid);
+        const newsletterChat = isNewsletterJid(targetJid);
         const useNewsletterSpecialFlow = useNewsletterSpecialFlowForJid(targetJid);
         const isForwardedFromDiscord = Boolean(forwardContext?.isForwarded);
         const hasReplyReference = !isForwardedFromDiscord && Boolean(message.reference);
@@ -1720,7 +1721,7 @@ const connectToWhatsApp = async (retry = 1) => {
             mapDiscordMessageToWhatsAppMessage({
                 discordMessageId: message.id,
                 sentMessage,
-                isNewsletter: useNewsletterSpecialFlow,
+                isNewsletter: newsletterChat,
             });
             storeMessage(sentMessage);
             if (!useNewsletterSpecialFlow) {
@@ -1795,7 +1796,7 @@ const connectToWhatsApp = async (retry = 1) => {
                         captionText = prependReplyFallbackContext(captionText, replyContext);
                     }
                     if (captionText || mentionJids.length) doc.caption = captionText;
-                    if (!useNewsletterSpecialFlow && mentionJids.length) doc.mentions = mentionJids;
+                    if (!newsletterChat && mentionJids.length) doc.mentions = mentionJids;
                 }
                 let attachmentContent = doc;
                 let didBufferRetry = false;
@@ -1812,7 +1813,7 @@ const connectToWhatsApp = async (retry = 1) => {
                             sentAttachment = true;
                             break;
                         }
-                        if (!useNewsletterSpecialFlow || didBufferRetry) {
+                        if (!newsletterChat || didBufferRetry) {
                             break;
                         }
                         const bufferRetryContent = await buildNewsletterBufferRetryContent(doc, preparedFile);
@@ -1828,7 +1829,7 @@ const connectToWhatsApp = async (retry = 1) => {
                         }, 'Retrying newsletter attachment with buffer payload after ack rejection');
                         continue;
                     } catch (err) {
-                        if (!useNewsletterSpecialFlow || didBufferRetry) {
+                        if (!newsletterChat || didBufferRetry) {
                             state.logger?.error(err);
                             break;
                         }
@@ -1884,11 +1885,11 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         const content = { text: finalText };
-        if (!useNewsletterSpecialFlow && mentionJids.length) {
+        if (!newsletterChat && mentionJids.length) {
             content.mentions = mentionJids;
         }
         let preview = null;
-        if (!useNewsletterSpecialFlow) {
+        if (!newsletterChat) {
             try {
                 preview = await utils.whatsapp.generateLinkPreview(finalText, {
                     uploadImage: typeof client.waUploadToServer === 'function' ? client.waUploadToServer : undefined,
@@ -1934,9 +1935,9 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         const targetJid = normalizeSendJid(jid);
-        const useNewsletterSpecialFlow = useNewsletterSpecialFlowForJid(targetJid);
+        const newsletterChat = isNewsletterJid(targetJid);
         let messageId = state.lastMessages[message.id];
-        if (useNewsletterSpecialFlow) {
+        if (newsletterChat) {
             const resolvedServerId = await waitForNewsletterServerId({
                 discordMessageId: message.id,
                 candidateId: messageId,
@@ -2008,7 +2009,7 @@ const connectToWhatsApp = async (retry = 1) => {
                 {
                     text,
                     edit: key,
-                    ...(!useNewsletterSpecialFlow && editMentions.length ? { mentions: editMentions } : {}),
+                    ...(!newsletterChat && editMentions.length ? { mentions: editMentions } : {}),
                 },
                 editOptions,
             );
@@ -2025,7 +2026,7 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         const targetJid = normalizeSendJid(jid);
-        const useNewsletterSpecialFlow = useNewsletterSpecialFlowForJid(targetJid);
+        const newsletterChat = isNewsletterJid(targetJid);
         const key = {
             id: state.lastMessages[reaction.message.id],
             fromMe: reaction.message.webhookId == null || reaction.message.author.username === 'You',
@@ -2036,7 +2037,7 @@ const connectToWhatsApp = async (retry = 1) => {
             key.participant = utils.whatsapp.toJid(reaction.message.author.username);
         }
 
-        if (useNewsletterSpecialFlow) {
+        if (newsletterChat) {
             const serverId = await waitForNewsletterServerId({
                 discordMessageId: reaction?.message?.id,
                 candidateId: key.id,
@@ -2096,9 +2097,9 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         const targetJid = normalizeSendJid(jid);
-        const useNewsletterSpecialFlow = useNewsletterSpecialFlowForJid(targetJid);
+        const newsletterChat = isNewsletterJid(targetJid);
         const rawDeleteId = normalizeBridgeMessageId(id);
-        const deleteId = useNewsletterSpecialFlow
+        const deleteId = newsletterChat
             ? await waitForNewsletterServerId({
                 discordMessageId,
                 candidateId: rawDeleteId,
@@ -2107,7 +2108,7 @@ const connectToWhatsApp = async (retry = 1) => {
             })
             : rawDeleteId;
         if (!targetJid || !deleteId) {
-            if (useNewsletterSpecialFlow) {
+            if (newsletterChat) {
                 state.logger?.warn?.({
                     jid: targetJid,
                     discordMessageId,
@@ -2120,7 +2121,7 @@ const connectToWhatsApp = async (retry = 1) => {
             }
             return;
         }
-        if (useNewsletterSpecialFlow && !isLikelyNewsletterServerId(deleteId)) {
+        if (newsletterChat && !isLikelyNewsletterServerId(deleteId)) {
             state.logger?.warn?.({
                 jid: targetJid,
                 discordMessageId,

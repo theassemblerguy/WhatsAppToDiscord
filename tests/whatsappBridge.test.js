@@ -440,7 +440,7 @@ test('Discord delete/edit/reaction events send the expected WhatsApp actions', a
   }
 });
 
-test('Discord reactions in newsletter chats use the generic reaction path by default', async () => {
+test('Discord reactions in newsletter chats use newsletter-specific API', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
     state.lastMessages['dc-news-react'] = 'newsletter-server-id-1';
@@ -460,10 +460,11 @@ test('Discord reactions in newsletter chats use the generic reaction path by def
 
     await delay(0);
 
-    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 0);
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.react?.key?.id, 'newsletter-server-id-1');
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.react?.text, '🔥');
+    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.jid, '1203630@newsletter');
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'newsletter-server-id-1');
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.reaction, '🔥');
+    assert.equal(harness.fakeClient.sendCalls.length, 0);
     assert.equal(state.sentReactions.has('newsletter-server-id-1'), true);
 
     harness.fakeClient.ev.emit('discordReaction', {
@@ -481,9 +482,8 @@ test('Discord reactions in newsletter chats use the generic reaction path by def
 
     await delay(0);
 
-    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 0);
-    assert.equal(harness.fakeClient.sendCalls.length, 2);
-    assert.equal(harness.fakeClient.sendCalls[1]?.content?.react?.text, '');
+    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 2);
+    assert.equal(harness.fakeClient.newsletterReactionCalls[1]?.reaction, undefined);
   } finally {
     harness.cleanup();
   }
@@ -508,14 +508,21 @@ test('Discord newsletter deletes use normalized server ids', async () => {
   }
 });
 
-test('Newsletter edit/reaction/delete use currently mapped ids without waiting by default', async () => {
+test('Newsletter edit/reaction/delete wait for server ids before sending actions', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
     const notices = [];
 
-    state.lastMessages['dc-news-edit-wait'] = 'wa-edit-1';
-    state.lastMessages['dc-news-react-wait'] = 'wa-react-1';
-    state.lastMessages['dc-news-delete-wait'] = 'wa-delete-1';
+    setTimeout(() => {
+      state.lastMessages['server-edit-1'] = 'dc-news-edit-wait';
+      state.lastMessages['dc-news-edit-wait'] = 'server-edit-1';
+
+      state.lastMessages['server-react-1'] = 'dc-news-react-wait';
+      state.lastMessages['dc-news-react-wait'] = 'server-react-1';
+
+      state.lastMessages['server-delete-1'] = 'dc-news-delete-wait';
+      state.lastMessages['dc-news-delete-wait'] = 'server-delete-1';
+    }, 120);
 
     harness.fakeClient.ev.emit('discordEdit', {
       jid: '1203630@newsletter',
@@ -545,35 +552,38 @@ test('Newsletter edit/reaction/delete use currently mapped ids without waiting b
 
     harness.fakeClient.ev.emit('discordDelete', {
       jid: '1203630@newsletter',
-      id: 'wa-delete-1',
+      id: null,
       discordMessageId: 'dc-news-delete-wait',
     });
 
-    await delay(0);
+    await delay(450);
 
     assert.equal(notices.length, 0);
     const editCall = harness.fakeClient.sendCalls.find((call) => call.content?.edit);
     assert.ok(editCall);
-    assert.equal(editCall?.content?.edit?.id, 'wa-edit-1');
+    assert.equal(editCall?.content?.edit?.id, 'server-edit-1');
 
-    const reactionCall = harness.fakeClient.sendCalls.find((call) => call.content?.react);
-    assert.ok(reactionCall);
-    assert.equal(reactionCall?.content?.react?.key?.id, 'wa-react-1');
-    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 0);
+    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'server-react-1');
 
     const deleteCall = harness.fakeClient.sendCalls.find((call) => call.content?.delete);
     assert.ok(deleteCall);
-    assert.equal(deleteCall?.content?.delete?.id, 'wa-delete-1');
+    assert.equal(deleteCall?.content?.delete?.id, 'server-delete-1');
   } finally {
     harness.cleanup();
   }
 });
 
-test('Newsletter reactions use outbound client ids without waiting by default', async () => {
+test('Newsletter reactions wait past outbound client ids for resolved server ids', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
     state.lastMessages['dc-news-react-outbound'] = '3EB0DD14CD06ABCE146147';
     state.lastMessages['3EB0DD14CD06ABCE146147'] = 'dc-news-react-outbound';
+
+    setTimeout(() => {
+      state.lastMessages['server-react-outbound-1'] = 'dc-news-react-outbound';
+      state.lastMessages['dc-news-react-outbound'] = 'server-react-outbound-1';
+    }, 120);
 
     harness.fakeClient.ev.emit('discordReaction', {
       jid: '1203630@newsletter',
@@ -589,18 +599,17 @@ test('Newsletter reactions use outbound client ids without waiting by default', 
       },
     });
 
-    await delay(0);
+    await delay(500);
 
-    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 0);
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.react?.key?.id, '3EB0DD14CD06ABCE146147');
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.react?.text, '🔥');
+    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'server-react-outbound-1');
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.reaction, '🔥');
   } finally {
     harness.cleanup();
   }
 });
 
-test('Discord newsletter sends use normalized JIDs and map outbound message IDs by default', async () => {
+test('Discord newsletter sends use normalized JIDs and map server IDs', async () => {
   const harness = await setupWhatsAppHarness({
     oneWay: 0b11,
     formatJid: (jid) => (typeof jid === 'string' ? jid.trim() : jid),
@@ -628,9 +637,9 @@ test('Discord newsletter sends use normalized JIDs and map outbound message IDs 
 
     assert.equal(harness.fakeClient.sendCalls.length, 1);
     assert.equal(harness.fakeClient.sendCalls[0]?.jid, '1203630@newsletter');
-    assert.equal(typeof harness.fakeClient.sendCalls[0]?.options?.getUrlInfo, 'function');
-    assert.equal(state.lastMessages['dc-news-send'], 'sent-1');
-    assert.equal(state.lastMessages['sent-1'], 'dc-news-send');
+    assert.equal(harness.fakeClient.sendCalls[0]?.options?.getUrlInfo, undefined);
+    assert.equal(state.lastMessages['dc-news-send'], 'server-1');
+    assert.equal(state.lastMessages['server-1'], 'dc-news-send');
     assert.ok(messageStore.get({ remoteJid: '1203630@newsletter', id: 'sent-1' }));
     assert.ok(messageStore.get({ remoteJid: '1203630@newsletter', id: 'server-1' }));
   } finally {
@@ -1565,7 +1574,7 @@ test('Newsletter attachment ack rejection does not trigger ack fallback by defau
   }
 });
 
-test('Newsletter attachment send failure falls back to text/link without buffer retry by default', async () => {
+test('Newsletter attachment send retries with buffer payload when URL media send fails', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   const originalFetch = global.fetch;
   try {
@@ -1616,10 +1625,7 @@ test('Newsletter attachment send failure falls back to text/link without buffer 
 
     assert.equal(harness.fakeClient.sendCalls.length, 2);
     assert.equal(harness.fakeClient.sendCalls[0]?.content?.image?.url, 'https://cdn.discordapp.com/attachments/123/456/newsletter-photo.png');
-    assert.equal(
-      harness.fakeClient.sendCalls[1]?.content?.text,
-      'https://cdn.discordapp.com/attachments/123/456/newsletter-photo.png',
-    );
+    assert.ok(Buffer.isBuffer(harness.fakeClient.sendCalls[1]?.content?.image));
   } finally {
     global.fetch = originalFetch;
     harness.cleanup();

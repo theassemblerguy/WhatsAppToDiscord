@@ -480,7 +480,7 @@ test('Discord messageDelete in newsletter channels emits server_id mapped discor
   }
 });
 
-test('Discord messageDelete in newsletter channels does not wait for delayed server_id mapping by default', async () => {
+test('Discord messageDelete in newsletter channels waits for delayed server_id mapping', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,
     getControlChannel: utils.discord.getControlChannel,
@@ -541,7 +541,11 @@ test('Discord messageDelete in newsletter channels does not wait for delayed ser
     });
     await delay(500);
 
-    assert.deepEqual(waEvents, []);
+    assert.deepEqual(waEvents, [{
+      jid: '120363123456789@newsletter',
+      id: 'server-delayed-1',
+      discordMessageId: 'dc-news-delayed',
+    }]);
   } finally {
     utils.discord.getGuild = originalDiscordUtils.getGuild;
     utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
@@ -558,7 +562,7 @@ test('Discord messageDelete in newsletter channels does not wait for delayed ser
   }
 });
 
-test('Discord newsletter deletes use currently mapped outbound ids by default', async () => {
+test('Discord newsletter deletes ignore outbound client ids while waiting for server_id mapping', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,
     getControlChannel: utils.discord.getControlChannel,
@@ -624,7 +628,7 @@ test('Discord newsletter deletes use currently mapped outbound ids by default', 
 
     assert.deepEqual(waEvents, [{
       jid: '120363123456789@newsletter',
-      id: '3EB0DD14CD06ABCE146147',
+      id: 'server-delayed-outbound-1',
       discordMessageId: 'dc-news-outbound',
     }]);
   } finally {
@@ -1785,7 +1789,7 @@ test('Discord reactions emit discordReaction towards WhatsApp', async () => {
   }
 });
 
-test('Discord newsletter reactions do not wait for delayed server_id mapping by default', async () => {
+test('Discord newsletter reactions require a mapped server_id before emitting', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,
     getControlChannel: utils.discord.getControlChannel,

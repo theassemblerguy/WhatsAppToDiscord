@@ -43,7 +43,10 @@ Routing may be restricted by deployment settings. Message-flow changes must pres
 - broadcast delivery mode for WhatsApp `@broadcast` chats (`sendMessage(..., ..., { broadcast: true })`
   on Discord -> WhatsApp sends)
 - newsletter delivery mode for WhatsApp `@newsletter` chats:
-  by default, Discord -> WhatsApp message/edit/delete/reaction flows are handled the same way as DMs/groups (generic bridge path, no newsletter-only pre-gates).
-  Set `WA2DC_NEWSLETTER_SPECIAL_FLOW=1` to re-enable the legacy newsletter-specific handling (server-id resolution waits, ack-aware media retries, and newsletter reaction API path).
+  outbound sends should use standard `sendMessage(...)` payloads like DMs/groups where possible.
+  edit/delete/reaction flows must resolve/use newsletter `server_id` mapping before dispatch.
+  reactions should use `newsletterReactMessage(jid, serverId, reaction?)` when available.
+  when newsletter media URL sends fail and the source is Discord CDN, retry with a buffer payload before falling back to text/link.
+  optional send-side hardening (ack-aware retry paths and quote fallback behavior) can be enabled with `WA2DC_NEWSLETTER_SPECIAL_FLOW=1`.
   Poll sends to newsletters should still try interactive payload first, then fall back to text on send or ack rejection (commonly ack error `479`).
   Mirror incoming WhatsApp newsletter reactions via `newsletter.reaction` events and key them by `server_id`.
