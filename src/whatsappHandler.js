@@ -831,6 +831,140 @@ const patchSendMessageForLinkPreviews = (client) => {
     client.__wa2dcLinkPreviewPatched = true;
 };
 
+const getNewsletterMediaTypeFromMessage = (message) => {
+    if (!message || typeof message !== 'object') {
+        return '';
+    }
+    if (message.imageMessage) {
+        return 'image';
+    }
+    if (message.videoMessage) {
+        return message.videoMessage.gifPlayback ? 'gif' : 'video';
+    }
+    if (message.audioMessage) {
+        return message.audioMessage.ptt ? 'ptt' : 'audio';
+    }
+    if (message.contactMessage) {
+        return 'vcard';
+    }
+    if (message.documentMessage) {
+        return 'document';
+    }
+    if (message.contactsArrayMessage) {
+        return 'contact_array';
+    }
+    if (message.liveLocationMessage) {
+        return 'livelocation';
+    }
+    if (message.stickerMessage) {
+        return 'sticker';
+    }
+    if (message.listMessage) {
+        return 'list';
+    }
+    if (message.listResponseMessage) {
+        return 'list_response';
+    }
+    if (message.buttonsResponseMessage) {
+        return 'buttons_response';
+    }
+    if (message.orderMessage) {
+        return 'order';
+    }
+    if (message.productMessage) {
+        return 'product';
+    }
+    if (message.interactiveResponseMessage) {
+        return 'native_flow_response';
+    }
+    if (message.groupInviteMessage) {
+        return 'group_invite';
+    }
+    return '';
+};
+
+const patchSendNodeForNewsletterMessages = (client) => {
+    if (!client || client.__wa2dcNewsletterNodePatched || typeof client.sendNode !== 'function') {
+        return;
+    }
+
+    const baseSendNode = client.sendNode.bind(client);
+    client.sendNode = async (frame) => {
+        try {
+            if (frame?.tag !== 'message') {
+                return baseSendNode(frame);
+            }
+            const to = typeof frame?.attrs?.to === 'string' ? frame.attrs.to.trim() : '';
+            if (!isNewsletterJid(to)) {
+                return baseSendNode(frame);
+            }
+
+            const needsMediaType = frame?.attrs?.type === 'media' && !frame?.attrs?.mediatype;
+            const contentNodes = Array.isArray(frame?.content) ? frame.content : [];
+            const hasMeta = (predicate) => contentNodes.some((node) => predicate(node));
+            const needsPollMeta = frame?.attrs?.type === 'poll'
+                && !hasMeta((node) => node?.tag === 'meta' && node?.attrs && typeof node.attrs.polltype === 'string');
+            const needsEventMeta = frame?.attrs?.type === 'event'
+                && !hasMeta((node) => node?.tag === 'meta' && node?.attrs && typeof node.attrs.event_type === 'string');
+            if (!needsMediaType && !needsPollMeta && !needsEventMeta) {
+                return baseSendNode(frame);
+            }
+
+            const plaintextNode = contentNodes.find((node) => node?.tag === 'plaintext');
+            const rawPlaintext = plaintextNode?.content;
+            if (!rawPlaintext) {
+                return baseSendNode(frame);
+            }
+
+            const plaintextBytes = typeof rawPlaintext === 'string'
+                ? Buffer.from(rawPlaintext, 'binary')
+                : Buffer.from(rawPlaintext);
+            let decoded = null;
+            try {
+                decoded = proto.Message.decode(plaintextBytes);
+            } catch (err) {
+                decoded = null;
+            }
+            const decodedMessage = decoded && typeof decoded.toJSON === 'function' ? decoded.toJSON() : decoded;
+            if (!decodedMessage) {
+                return baseSendNode(frame);
+            }
+
+            if (needsMediaType) {
+                const mediatype = getNewsletterMediaTypeFromMessage(decodedMessage);
+                if (mediatype) {
+                    frame.attrs.mediatype = mediatype;
+                }
+            }
+
+            if (needsPollMeta) {
+                const hasPollCreation = Boolean(
+                    decodedMessage.pollCreationMessage
+                    || decodedMessage.pollCreationMessageV2
+                    || decodedMessage.pollCreationMessageV3
+                    || decodedMessage.pollCreationMessageV4,
+                );
+                if (hasPollCreation) {
+                    contentNodes.push({ tag: 'meta', attrs: { polltype: 'creation' } });
+                    frame.content = contentNodes;
+                }
+            }
+
+            if (needsEventMeta) {
+                if (decodedMessage.eventMessage) {
+                    contentNodes.push({ tag: 'meta', attrs: { event_type: 'creation' } });
+                    frame.content = contentNodes;
+                }
+            }
+        } catch (err) {
+            state.logger?.debug?.({ err }, 'Failed to patch newsletter message stanza before send');
+        }
+        return baseSendNode(frame);
+    };
+
+    client.__wa2dcNewsletterNodePatched = true;
+};
+
 const ensureSignalStoreSupport = async (keyStore) => {
     if (!keyStore?.get || !keyStore?.set) {
         return;
@@ -915,6 +1049,7 @@ const connectToWhatsApp = async (retry = 1) => {
     });
     client.contacts = state.contacts;
     patchSendMessageForLinkPreviews(client);
+    patchSendNodeForNewsletterMessages(client);
     patchGroupMetadataForCache(client);
     const groupRefreshScheduler = createGroupRefreshScheduler({
         refreshFn: (jid) => refreshGroupMetadata(client, jid),

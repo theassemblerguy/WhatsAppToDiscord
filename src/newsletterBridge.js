@@ -16,7 +16,17 @@ const normalizeBridgeMessageId = (value) => {
 
 const isLikelyNewsletterServerId = (value) => {
   const normalized = normalizeBridgeMessageId(value);
-  return Boolean(normalized);
+  if (!normalized) return false;
+
+  // Baileys generates outbound message IDs that look like:
+  // - generateMessageIDV2: "3EB0" + 18 hex chars (22 total)
+  // - generateMessageID:   "3EB0" + 36 hex chars (40 total)
+  //
+  // WhatsApp newsletters expose a separate "server_id" used for reactions/deletes.
+  // Treat Baileys-style IDs as *not* server IDs so we can wait for the actual server_id mapping.
+  if (/^3EB0[0-9A-F]{18,36}$/i.test(normalized)) return false;
+
+  return true;
 };
 
 const getNewsletterServerIdFromMessage = (message) => {

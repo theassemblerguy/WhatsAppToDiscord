@@ -3734,12 +3734,11 @@ const whatsapp = {
     }
   },
   createDocumentContent(attachment) {
-    let contentType = attachment.contentType?.split('/')?.[0] || 'application';
+    const mimetype = attachment.contentType?.split(';')?.[0] || 'application/octet-stream';
+    let contentType = mimetype.split('/')?.[0] || 'application';
     contentType = ['image', 'video', 'audio'].includes(contentType) ? contentType : 'document';
     const documentContent = {};
-    if (contentType === 'document') {
-      documentContent['mimetype'] = attachment.contentType?.split(';')?.[0] || 'application/octet-stream';
-    }
+    documentContent.mimetype = mimetype;
     documentContent[contentType] = { url: attachment.url };
     if (contentType === 'document') {
       documentContent.fileName = attachment.name;
