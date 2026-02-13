@@ -426,7 +426,7 @@ test('/newsletterinviteinfo returns invite link/code from metadata', async () =>
   }
 });
 
-test('/poll in a newsletter-linked channel forces announcement-group mode', async () => {
+test('/poll in a newsletter-linked channel falls back to text payload', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,
     getControlChannel: utils.discord.getControlChannel,
@@ -466,7 +466,7 @@ test('/poll in a newsletter-linked channel forces announcement-group mode', asyn
 
     const fakeClient = new FakeDiscordClient();
     setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
-    const discordHandler = await importDiscordHandler('poll-newsletter-announcement-mode');
+    const discordHandler = await importDiscordHandler('poll-newsletter-text-fallback');
     state.dcClient = await discordHandler.start();
     await delay(0);
 
@@ -485,8 +485,14 @@ test('/poll in a newsletter-linked channel forces announcement-group mode', asyn
     await delay(0);
 
     assert.equal(sentPayload?.jid, '120363123456789012@newsletter');
-    assert.equal(sentPayload?.content?.poll?.toAnnouncementGroup, true);
-    assert.equal(interaction.records.editReply[0]?.content, 'Poll sent to WhatsApp!');
+    assert.equal(typeof sentPayload?.content?.text, 'string');
+    assert.ok(sentPayload?.content?.text?.includes('📊 Poll: Bridge poll?'));
+    assert.ok(sentPayload?.content?.text?.includes('1. Yes'));
+    assert.ok(sentPayload?.content?.text?.includes('2. No'));
+    assert.equal(
+      interaction.records.editReply[0]?.content,
+      'Newsletter poll fallback sent as text (interactive poll payload rejected by WhatsApp).',
+    );
   } finally {
     utils.discord.getGuild = originalDiscordUtils.getGuild;
     utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;

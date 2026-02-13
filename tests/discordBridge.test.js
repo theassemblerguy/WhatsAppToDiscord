@@ -339,7 +339,7 @@ test('Discord messageDelete emits discordDelete for bridged messages', async () 
     });
     await delay(0);
 
-    assert.deepEqual(waEvents, [{ jid: 'jid@s.whatsapp.net', id: 'wa-1' }]);
+    assert.deepEqual(waEvents, [{ jid: 'jid@s.whatsapp.net', id: 'wa-1', discordMessageId: 'dc-1' }]);
     assert.equal(state.lastMessages['wa-1'], undefined);
     assert.equal(state.lastMessages['dc-1'], undefined);
   } finally {
@@ -459,6 +459,7 @@ test('Discord messageDelete in newsletter channels emits server_id mapped discor
     assert.deepEqual(waEvents, [{
       jid: '120363123456789@newsletter',
       id: 'newsletter-server-id-1',
+      discordMessageId: 'dc-news-1',
     }]);
   } finally {
     utils.discord.getGuild = originalDiscordUtils.getGuild;

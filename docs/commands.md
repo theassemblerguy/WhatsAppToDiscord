@@ -34,7 +34,7 @@ Usage: `/list query:<optional text>`
 ### `/poll`
 Create a WhatsApp poll from Discord.  
 Usage: `/poll question:"text" options:"opt1,opt2,..." select:<count> announcement:<true|false>`  
-Notes: Poll messages and live vote updates are mirrored to Discord, voting can only be done directly in WhatsApp. In newsletter-linked channels, WA2DC automatically enables announcement-mode poll payloads.
+Notes: Poll messages and live vote updates are mirrored to Discord, voting can only be done directly in WhatsApp. In newsletter-linked channels, WA2DC currently sends a text fallback because interactive poll payloads are often rejected by WhatsApp newsletter sessions.
 
 ### `/setpinduration`
 Set the default expiration time (24h, 7d, or 30d) for WhatsApp pins created from Discord.  
@@ -42,7 +42,7 @@ Usage: `/setpinduration duration:<24h|7d|30d>`
 
 ### Newsletters
 
-Once a newsletter is linked to a Discord channel, regular messages/media flow through the bridge normally (no special send command needed).
+Once a newsletter is linked to a Discord channel, regular messages flow through the bridge normally (no special send command needed). If WhatsApp rejects a newsletter media payload, WA2DC falls back to text + links and logs the ack error.
 
 ### `/newslettercreate`
 Create a WhatsApp newsletter and automatically link it to a Discord channel.  

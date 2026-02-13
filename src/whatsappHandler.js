@@ -242,6 +242,148 @@ const mapDiscordMessageToWhatsAppMessage = ({ discordMessageId, sentMessage, isN
     }
 };
 
+const NEWSLETTER_ACK_ERROR_TTL_MS = 30 * 1000;
+const NEWSLETTER_ACK_WAIT_MS = 900;
+const newsletterAckErrors = new Map();
+const newsletterAckWaiters = new Map();
+
+const normalizeMessageId = (value) => {
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'number') return String(value);
+    return String(value || '').trim();
+};
+
+const isLikelyNewsletterServerId = (value) => {
+    const normalized = normalizeMessageId(value);
+    if (!normalized) return false;
+    if (/^\d+$/.test(normalized)) return true;
+    if (/^(3EB|BAE5)/i.test(normalized)) return false;
+    if (/^[A-F0-9]{16,}$/i.test(normalized)) return false;
+    return true;
+};
+
+const pruneNewsletterAckErrors = () => {
+    const cutoff = Date.now() - NEWSLETTER_ACK_ERROR_TTL_MS;
+    for (const [messageId, payload] of newsletterAckErrors.entries()) {
+        if (!payload || payload.timestamp < cutoff) {
+            newsletterAckErrors.delete(messageId);
+        }
+    }
+};
+
+const resolveNewsletterAckWaiters = (messageId, errorCode) => {
+    const waiters = newsletterAckWaiters.get(messageId);
+    if (!waiters?.size) return;
+    newsletterAckWaiters.delete(messageId);
+    for (const resolve of waiters) {
+        try {
+            resolve(errorCode);
+        } catch {
+            continue;
+        }
+    }
+};
+
+const noteNewsletterAckError = ({ messageId, jid, errorCode }) => {
+    const normalizedMessageId = normalizeMessageId(messageId);
+    if (!normalizedMessageId) return;
+    const normalizedError = normalizeMessageId(errorCode) || 'unknown';
+    pruneNewsletterAckErrors();
+    newsletterAckErrors.set(normalizedMessageId, {
+        errorCode: normalizedError,
+        jid: normalizeSendJid(jid),
+        timestamp: Date.now(),
+    });
+    resolveNewsletterAckWaiters(normalizedMessageId, normalizedError);
+};
+
+const waitForNewsletterAckError = async (messageId, timeoutMs = NEWSLETTER_ACK_WAIT_MS) => {
+    const normalizedMessageId = normalizeMessageId(messageId);
+    if (!normalizedMessageId) return null;
+    pruneNewsletterAckErrors();
+    const cached = newsletterAckErrors.get(normalizedMessageId);
+    if (cached?.errorCode) {
+        return cached.errorCode;
+    }
+    return await new Promise((resolve) => {
+        const existing = newsletterAckWaiters.get(normalizedMessageId) || new Set();
+        const settle = (errorCode = null) => {
+            clearTimeout(timer);
+            existing.delete(settle);
+            if (existing.size) {
+                newsletterAckWaiters.set(normalizedMessageId, existing);
+            } else {
+                newsletterAckWaiters.delete(normalizedMessageId);
+            }
+            resolve(errorCode || null);
+        };
+        existing.add(settle);
+        newsletterAckWaiters.set(normalizedMessageId, existing);
+        const timer = setTimeout(() => settle(null), timeoutMs);
+        if (typeof timer?.unref === 'function') {
+            timer.unref();
+        }
+    });
+};
+
+const clearFailedNewsletterMapping = ({ discordMessageId, sentMessage }) => {
+    const normalizedDiscordMessageId = normalizeMessageId(discordMessageId);
+    if (!normalizedDiscordMessageId) return;
+    const outboundId = normalizeMessageId(sentMessage?.key?.id);
+    const serverId = normalizeMessageId(getNewsletterServerIdFromMessage(sentMessage));
+    const removeIfMatches = (key) => {
+        if (!key) return;
+        if (state.lastMessages[key] === normalizedDiscordMessageId) {
+            delete state.lastMessages[key];
+        }
+    };
+    if (
+        state.lastMessages[normalizedDiscordMessageId] === outboundId
+        || (serverId && state.lastMessages[normalizedDiscordMessageId] === serverId)
+    ) {
+        delete state.lastMessages[normalizedDiscordMessageId];
+    }
+    removeIfMatches(outboundId);
+    removeIfMatches(serverId);
+    if (outboundId) state.sentMessages.delete(outboundId);
+    if (serverId) state.sentMessages.delete(serverId);
+};
+
+const mapNewsletterServerIdFromOutbound = ({ outboundId, serverId }) => {
+    const normalizedOutboundId = normalizeMessageId(outboundId);
+    const normalizedServerId = normalizeMessageId(serverId);
+    if (!normalizedOutboundId || !normalizedServerId || normalizedOutboundId === normalizedServerId) {
+        return null;
+    }
+    const discordMessageId = normalizeMessageId(state.lastMessages[normalizedOutboundId]);
+    if (!discordMessageId) {
+        return null;
+    }
+    state.lastMessages[discordMessageId] = normalizedServerId;
+    state.lastMessages[normalizedServerId] = discordMessageId;
+    state.sentMessages.add(normalizedServerId);
+    return normalizedServerId;
+};
+
+const resolveNewsletterServerIdForDiscordMessage = ({ discordMessageId, candidateId = null }) => {
+    const normalizedCandidateId = normalizeMessageId(candidateId);
+    if (isLikelyNewsletterServerId(normalizedCandidateId)) {
+        return normalizedCandidateId;
+    }
+    const normalizedDiscordMessageId = normalizeMessageId(discordMessageId)
+        || normalizeMessageId(state.lastMessages[normalizedCandidateId]);
+    if (!normalizedDiscordMessageId) {
+        return normalizedCandidateId || null;
+    }
+    for (const [waId, dcId] of Object.entries(state.lastMessages)) {
+        if (normalizeMessageId(dcId) !== normalizedDiscordMessageId) continue;
+        if (isLikelyNewsletterServerId(waId)) {
+            return normalizeMessageId(waId);
+        }
+    }
+    return normalizedCandidateId || null;
+};
+
 const toMentionLabel = (value) => {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim().replace(/^@+/, '');
@@ -824,9 +966,21 @@ const connectToWhatsApp = async (retry = 1) => {
     client.ev.on('messages.upsert', async (update) => {
         if (['notify', 'append'].includes(update.type)) {
             for await (const rawMessage of update.messages) {
-                const messageId = utils.whatsapp.getId(rawMessage);
-                if (state.sentMessages.has(messageId)) {
-                    state.sentMessages.delete(messageId);
+                const messageId = normalizeMessageId(utils.whatsapp.getId(rawMessage));
+                const outboundId = normalizeMessageId(rawMessage?.key?.id);
+                const serverId = normalizeMessageId(getNewsletterServerIdFromMessage(rawMessage));
+                const remoteJid = normalizeSendJid(rawMessage?.key?.remoteJid || rawMessage?.chatId || rawMessage?.attrs?.from);
+                const newsletterChat = isNewsletterJid(remoteJid);
+                const sentCandidates = [...new Set([messageId, outboundId, serverId].filter(Boolean))];
+                if (sentCandidates.some((id) => state.sentMessages.has(id))) {
+                    if (newsletterChat) {
+                        mapNewsletterServerIdFromOutbound({ outboundId, serverId });
+                    }
+                    sentCandidates.forEach((id) => state.sentMessages.delete(id));
+                    continue;
+                }
+                if (newsletterChat && rawMessage?.key?.fromMe && outboundId && state.lastMessages[outboundId]) {
+                    mapNewsletterServerIdFromOutbound({ outboundId, serverId });
                     continue;
                 }
                 const messageType = utils.whatsapp.getMessageType(rawMessage);
@@ -1003,6 +1157,27 @@ const connectToWhatsApp = async (retry = 1) => {
 
     client.ev.on('messages.update', async (updates) => {
         for (const { update, key } of updates) {
+            const normalizedRemoteJid = normalizeSendJid(key?.remoteJid);
+            if (
+                key?.fromMe
+                && update?.status === WAMessageStatus.ERROR
+                && isNewsletterJid(normalizedRemoteJid)
+            ) {
+                const [errorCodeRaw] = Array.isArray(update?.messageStubParameters)
+                    ? update.messageStubParameters
+                    : [];
+                const errorCode = normalizeMessageId(errorCodeRaw) || 'unknown';
+                noteNewsletterAckError({
+                    messageId: key?.id,
+                    jid: normalizedRemoteJid,
+                    errorCode,
+                });
+                state.logger?.warn?.({
+                    jid: normalizedRemoteJid,
+                    id: key?.id,
+                    error: errorCode,
+                }, 'Newsletter send failed with ack error');
+            }
             if (Array.isArray(update.pollUpdates) && update.pollUpdates.length) {
                     const pollMessage = messageStore.get({ ...key, remoteJid: utils.whatsapp.formatJid(key?.remoteJid) });
                     if (!pollMessage) {
@@ -1321,6 +1496,22 @@ const connectToWhatsApp = async (retry = 1) => {
                         isNewsletter: isNewsletterChat,
                     });
                     storeMessage(sentMessage);
+                    if (isNewsletterChat) {
+                        const ackErrorCode = await waitForNewsletterAckError(sentMessage?.key?.id);
+                        if (ackErrorCode) {
+                            clearFailedNewsletterMapping({
+                                discordMessageId: message.id,
+                                sentMessage,
+                            });
+                            state.logger?.warn?.({
+                                jid: targetJid,
+                                discordMessageId: message.id,
+                                outboundId: sentMessage?.key?.id,
+                                error: ackErrorCode,
+                            }, 'Newsletter attachment send was rejected by WhatsApp ack');
+                            continue;
+                        }
+                    }
                     sentAnyAttachment = true;
                 } catch (err) {
                     state.logger?.error(err);
@@ -1485,12 +1676,21 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         if (newsletterChat) {
-            const serverId = typeof key.id === 'string' ? key.id.trim() : String(key.id || '').trim();
+            const serverId = resolveNewsletterServerIdForDiscordMessage({
+                discordMessageId: reaction?.message?.id,
+                candidateId: key.id,
+            });
             if (!serverId) {
                 return;
             }
             if (typeof client.newsletterReactMessage !== 'function') {
                 state.logger?.warn?.({ jid: targetJid }, 'newsletterReactMessage is unavailable on this WhatsApp client');
+                return;
+            }
+            if (!isLikelyNewsletterServerId(serverId)) {
+                await reaction?.message?.channel?.send(
+                    'Could not resolve a newsletter server message ID for this reaction yet. Please try again in a few seconds.',
+                ).catch(() => {});
                 return;
             }
 
@@ -1499,6 +1699,9 @@ const connectToWhatsApp = async (retry = 1) => {
                 state.sentReactions.add(serverId);
             } catch (err) {
                 state.logger?.error(err);
+                await reaction?.message?.channel?.send(
+                    "Couldn't apply that reaction on the WhatsApp newsletter message.",
+                ).catch(() => {});
             }
             return;
         }
@@ -1520,14 +1723,30 @@ const connectToWhatsApp = async (retry = 1) => {
         }
     });
 
-    client.ev.on('discordDelete', async ({ jid, id }) => {
+    client.ev.on('discordDelete', async ({ jid, id, discordMessageId }) => {
         if (!allowsDiscordToWhatsApp()) {
             return;
         }
 
         const targetJid = normalizeSendJid(jid);
-        const deleteId = typeof id === 'string' ? id.trim() : String(id || '').trim();
+        const isNewsletterChat = isNewsletterJid(targetJid);
+        const rawDeleteId = normalizeMessageId(id);
+        const deleteId = isNewsletterChat
+            ? resolveNewsletterServerIdForDiscordMessage({
+                discordMessageId,
+                candidateId: rawDeleteId,
+            })
+            : rawDeleteId;
         if (!targetJid || !deleteId) {
+            return;
+        }
+        if (isNewsletterChat && !isLikelyNewsletterServerId(deleteId)) {
+            state.logger?.warn?.({
+                jid: targetJid,
+                discordMessageId,
+                id,
+                resolvedId: deleteId,
+            }, 'Skipping newsletter delete because no server message id could be resolved');
             return;
         }
         const deleteOptions = buildSendOptionsForJid(targetJid);
