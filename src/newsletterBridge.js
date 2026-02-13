@@ -41,6 +41,12 @@ const resolveNewsletterServerIdForDiscordMessage = (
 ) => {
   const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
   const normalizedFallbackId = normalizeBridgeMessageId(fallbackId);
+  const directLookup = normalizedDiscordMessageId && lastMessages
+    ? normalizeBridgeMessageId(lastMessages[normalizedDiscordMessageId])
+    : '';
+  if (isLikelyNewsletterServerId(directLookup)) {
+    return directLookup;
+  }
   if (isLikelyNewsletterServerId(normalizedFallbackId)) {
     return normalizedFallbackId;
   }
