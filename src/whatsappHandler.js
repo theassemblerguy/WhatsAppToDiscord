@@ -154,6 +154,7 @@ const useNewsletterSpecialFlowForJid = (jid = '') => NEWSLETTER_SPECIAL_FLOW_ENA
 const normalizeSendJid = (jid) => utils.whatsapp.formatJid(jid) || jid;
 const NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS = 8000;
 const NEWSLETTER_SERVER_ID_WAIT_POLL_MS = 150;
+const NEWSLETTER_SERVER_ID_WAIT_WITHOUT_PENDING_MS = 300;
 const NEWSLETTER_ACK_WAIT_WITH_SERVER_ID_MS = 2500;
 const NEWSLETTER_ACK_WAIT_WITHOUT_SERVER_ID_MS = 8000;
 const NEWSLETTER_SERVER_ID_FETCH_FALLBACK_COUNT = 30;
@@ -716,6 +717,9 @@ const mapDiscordMessageToWhatsAppMessage = ({ discordMessageId, sentMessage, isN
         state.lastMessages[outboundId] = discordMessageId;
         state.sentMessages.add(outboundId);
     }
+    if (serverId && outboundId && serverId !== outboundId) {
+        state.lastMessages[discordMessageId] = serverId;
+    }
     if (serverId && serverId !== outboundId) {
         state.sentMessages.add(serverId);
     }
@@ -797,6 +801,7 @@ const mapPendingNewsletterServerId = ({
     state.lastMessages[normalizedServerId] = mappedDiscordMessageId;
     if (mappedOutboundId) {
         state.lastMessages[mappedOutboundId] = mappedDiscordMessageId;
+        state.lastMessages[mappedDiscordMessageId] = normalizedServerId;
     }
     state.sentMessages.add(normalizedServerId);
     clearPendingNewsletterSends({
@@ -868,11 +873,33 @@ const resolveNewsletterServerIdFromFetch = async ({
     }
     const normalizedCandidateId = normalizeBridgeMessageId(candidateId);
     const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
-    const pending = getPendingNewsletterSend({
+    let pending = getPendingNewsletterSend({
         jid: normalizedJid,
         outboundId: normalizedCandidateId,
         discordMessageId: normalizedDiscordMessageId,
     });
+    if (!pending && normalizedCandidateId) {
+        const storedMessage = messageStore.get({ remoteJid: normalizedJid, id: normalizedCandidateId });
+        if (storedMessage) {
+            const storedTimestamp = toIntegerOrNull(
+                storedMessage?.messageTimestamp
+                ?? storedMessage?.messageTimestampMs
+                ?? storedMessage?.message?.messageTimestamp,
+            );
+            const timestampMs = storedTimestamp
+                ? (storedTimestamp > 1_000_000_000_000 ? storedTimestamp : storedTimestamp * 1000)
+                : Date.now();
+            const signature = getNewsletterSignatureFromMessagePayload(storedMessage?.message || {});
+            pending = {
+                jid: normalizedJid,
+                discordMessageId: normalizedDiscordMessageId || null,
+                outboundId: normalizedCandidateId,
+                type: signature?.type || '',
+                text: signature?.text || '',
+                timestamp: timestampMs,
+            };
+        }
+    }
     if (!pending) {
         return null;
     }
@@ -3248,10 +3275,17 @@ const connectToWhatsApp = async (retry = 1) => {
         if (newsletterChat) {
             await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
             const candidateId = normalizeBridgeMessageId(key.id);
+            const hasPendingSend = Boolean(getPendingNewsletterSend({
+                jid: targetJid,
+                outboundId: candidateId,
+                discordMessageId: reaction?.message?.id,
+            }));
             let serverId = await waitForNewsletterServerId({
                 discordMessageId: reaction?.message?.id,
                 candidateId: key.id,
-                timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
+                timeoutMs: hasPendingSend
+                    ? NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS
+                    : NEWSLETTER_SERVER_ID_WAIT_WITHOUT_PENDING_MS,
                 pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
             });
             if (!serverId) {

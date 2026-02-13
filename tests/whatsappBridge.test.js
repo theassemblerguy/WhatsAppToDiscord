@@ -629,6 +629,85 @@ test('Newsletter reactions wait past outbound client ids for resolved server ids
   }
 });
 
+test('Newsletter reactions recover server ids from stored outbound messages after restart', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    messageStore.clear();
+    const outboundId = '3EB0DD14CD06ABCE146147';
+    harness.fakeClient.sendMessage = async (jid, content, options) => {
+      harness.fakeClient.sendCalls.push({ jid, content, options });
+      return {
+        key: {
+          id: outboundId,
+          remoteJid: jid,
+        },
+        message: {
+          conversation: content?.text || '',
+        },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      };
+    };
+    harness.fakeClient.newsletterFetchMessages = async () => [{
+      key: {
+        server_id: 'server-react-restart-1',
+        remoteJid: '1203630@newsletter',
+      },
+      message: {
+        conversation: 'newsletter restart map text',
+      },
+      messageTimestamp: Math.floor(Date.now() / 1000),
+    }];
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '1203630@newsletter',
+      message: {
+        id: 'dc-news-react-restart',
+        content: 'newsletter restart map text',
+        cleanContent: 'newsletter restart map text',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+    await delay(0);
+
+    assert.equal(state.lastMessages['dc-news-react-restart'], outboundId);
+    assert.ok(messageStore.get({ remoteJid: '1203630@newsletter', id: outboundId }));
+
+    // Simulate process restart: in-memory pending-send state is lost.
+    resetNewsletterBridgeState();
+
+    harness.fakeClient.ev.emit('discordReaction', {
+      jid: '1203630@newsletter',
+      removed: false,
+      reaction: {
+        emoji: { name: '🔥' },
+        message: {
+          id: 'dc-news-react-restart',
+          webhookId: null,
+          author: { username: 'You' },
+          channel: { send: async () => {} },
+        },
+      },
+    });
+    await delay(500);
+
+    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'server-react-restart-1');
+    assert.equal(state.lastMessages['dc-news-react-restart'], 'server-react-restart-1');
+    assert.equal(state.lastMessages['server-react-restart-1'], 'dc-news-react-restart');
+    assert.equal(state.lastMessages[outboundId], 'dc-news-react-restart');
+  } finally {
+    messageStore.clear();
+    harness.cleanup();
+  }
+});
+
 test('Discord newsletter sends use normalized JIDs and map server IDs', async () => {
   const harness = await setupWhatsAppHarness({
     oneWay: 0b11,
