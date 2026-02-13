@@ -42,7 +42,7 @@ Usage: `/setpinduration duration:<24h|7d|30d>`
 
 ### Newsletters
 
-Once a newsletter is linked to a Discord channel, regular messages flow through the bridge normally (no special send command needed). WA2DC now attempts quote-threading for Discord replies, and falls back to plain reply-context text if newsletter quote payloads are rejected or unavailable. If WhatsApp rejects a newsletter media payload, WA2DC falls back to text + links and logs the ack error.
+Once a newsletter is linked to a Discord channel, regular messages flow through the bridge normally (no special send command needed). WA2DC now attempts quote-threading for Discord replies, and falls back to plain reply-context text if newsletter quote payloads are rejected or unavailable. For newsletter media, WA2DC waits for WhatsApp ack outcomes, retries failed Discord-CDN media sends as buffer payloads when possible, and then falls back to text + links if media still fails.
 
 ### `/newslettercreate`
 Create a WhatsApp newsletter and automatically link it to a Discord channel.  

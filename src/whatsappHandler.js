@@ -142,6 +142,14 @@ const isNewsletterJid = (jid = '') => typeof jid === 'string' && jid.endsWith('@
 const normalizeSendJid = (jid) => utils.whatsapp.formatJid(jid) || jid;
 const NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS = 8000;
 const NEWSLETTER_SERVER_ID_WAIT_POLL_MS = 150;
+const NEWSLETTER_ACK_WAIT_WITH_SERVER_ID_MS = 2500;
+const NEWSLETTER_ACK_WAIT_WITHOUT_SERVER_ID_MS = 8000;
+const NEWSLETTER_BUFFER_RETRY_MAX_BYTES = 64 * 1024 * 1024;
+const NEWSLETTER_BUFFER_FETCH_TIMEOUT_MS = 7000;
+const DISCORD_ATTACHMENT_HOSTS = new Set([
+    'cdn.discordapp.com',
+    'media.discordapp.net',
+]);
 const DISCORD_ATTACHMENT_MIME_BY_EXTENSION = {
     gif: 'image/gif',
     jpg: 'image/jpeg',
@@ -172,6 +180,89 @@ const DISCORD_ATTACHMENT_MIME_BY_EXTENSION = {
     '7z': 'application/x-7z-compressed',
     gz: 'application/gzip',
     tar: 'application/x-tar',
+};
+const newsletterAckWaitMsForSentMessage = (sentMessage) => (
+    getNewsletterServerIdFromMessage(sentMessage)
+        ? NEWSLETTER_ACK_WAIT_WITH_SERVER_ID_MS
+        : NEWSLETTER_ACK_WAIT_WITHOUT_SERVER_ID_MS
+);
+
+const isDiscordAttachmentUrl = (value = '') => {
+    if (typeof value !== 'string' || !value) return false;
+    try {
+        const parsed = new URL(value);
+        return DISCORD_ATTACHMENT_HOSTS.has(parsed.hostname.toLowerCase());
+    } catch {
+        return false;
+    }
+};
+
+const downloadNewsletterAttachmentBuffer = async (url) => {
+    if (!isDiscordAttachmentUrl(url)) return null;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timeout = controller
+        ? setTimeout(() => controller.abort(), NEWSLETTER_BUFFER_FETCH_TIMEOUT_MS)
+        : null;
+    if (typeof timeout?.unref === 'function') {
+        timeout.unref();
+    }
+    let response;
+    try {
+        response = await fetch(url, {
+            redirect: 'follow',
+            ...(controller ? { signal: controller.signal } : {}),
+        });
+    } catch (err) {
+        state.logger?.debug?.({ err, url }, 'Failed to fetch newsletter attachment URL for buffer retry');
+        return null;
+    } finally {
+        if (timeout) {
+            clearTimeout(timeout);
+        }
+    }
+    if (!response?.ok) {
+        state.logger?.debug?.({ status: response?.status, url }, 'Newsletter attachment fetch for buffer retry returned non-OK status');
+        return null;
+    }
+    const contentLengthRaw = Number(response.headers.get('content-length'));
+    if (Number.isFinite(contentLengthRaw) && contentLengthRaw > NEWSLETTER_BUFFER_RETRY_MAX_BYTES) {
+        state.logger?.warn?.({
+            url,
+            size: contentLengthRaw,
+            max: NEWSLETTER_BUFFER_RETRY_MAX_BYTES,
+        }, 'Skipping newsletter media buffer retry because attachment exceeds max size');
+        return null;
+    }
+    const data = Buffer.from(await response.arrayBuffer());
+    if (data.length > NEWSLETTER_BUFFER_RETRY_MAX_BYTES) {
+        state.logger?.warn?.({
+            url,
+            size: data.length,
+            max: NEWSLETTER_BUFFER_RETRY_MAX_BYTES,
+        }, 'Skipping newsletter media buffer retry because downloaded payload exceeds max size');
+        return null;
+    }
+    return data;
+};
+
+const buildNewsletterBufferRetryContent = async (doc = {}, preparedFile = {}) => {
+    if (!doc || typeof doc !== 'object') return null;
+    const mediaType = doc.image
+        ? 'image'
+        : (doc.video ? 'video' : (doc.audio ? 'audio' : (doc.document ? 'document' : null)));
+    if (!mediaType) return null;
+    const currentMedia = doc[mediaType];
+    const mediaUrl = currentMedia?.url;
+    if (!mediaUrl) return null;
+    const buffer = await downloadNewsletterAttachmentBuffer(mediaUrl);
+    if (!buffer) return null;
+
+    const next = { ...doc, [mediaType]: buffer };
+    if (mediaType === 'document') {
+        next.fileName = doc.fileName || preparedFile.name;
+        next.mimetype = doc.mimetype || preparedFile.contentType || 'application/octet-stream';
+    }
+    return next;
 };
 const guessAttachmentExtension = (value = '') => {
     if (typeof value !== 'string') return null;
@@ -1471,6 +1562,50 @@ const connectToWhatsApp = async (retry = 1) => {
                 );
             }
         };
+        const sendTrackedMessage = async (
+            content,
+            sendOptions,
+            {
+                ackContext = 'Newsletter send',
+                notifyAckFailure = false,
+            } = {},
+        ) => {
+            const sentMessage = await sendWithNewsletterQuoteFallback(content, sendOptions);
+            mapDiscordMessageToWhatsAppMessage({
+                discordMessageId: message.id,
+                sentMessage,
+                isNewsletter: isNewsletterChat,
+            });
+            storeMessage(sentMessage);
+            if (!isNewsletterChat) {
+                return { sentMessage, ackErrorCode: null };
+            }
+
+            const ackWaitMs = newsletterAckWaitMsForSentMessage(sentMessage);
+            const ackErrorCode = await waitForNewsletterAckError(sentMessage?.key?.id, ackWaitMs);
+            if (!ackErrorCode) {
+                return { sentMessage, ackErrorCode: null };
+            }
+
+            clearFailedNewsletterMapping({
+                discordMessageId: message.id,
+                sentMessage,
+            });
+            state.logger?.warn?.({
+                jid: targetJid,
+                discordMessageId: message.id,
+                outboundId: sentMessage?.key?.id,
+                serverId: getNewsletterServerIdFromMessage(sentMessage),
+                error: ackErrorCode,
+                ackWaitMs,
+            }, `${ackContext} was rejected by WhatsApp ack`);
+            if (notifyAckFailure) {
+                await message.channel?.send(
+                    `Couldn't send this message to WhatsApp newsletter (ack ${ackErrorCode}).`,
+                ).catch(() => {});
+            }
+            return { sentMessage, ackErrorCode };
+        };
 
         if (shouldSendAttachments) {
             let first = true;
@@ -1493,33 +1628,55 @@ const connectToWhatsApp = async (retry = 1) => {
                     if (captionText || mentionJids.length) doc.caption = captionText;
                     if (!isNewsletterChat && mentionJids.length) doc.mentions = mentionJids;
                 }
-                try {
-                    const sentMessage = await sendWithNewsletterQuoteFallback(doc, first ? options : undefined);
-                    mapDiscordMessageToWhatsAppMessage({
-                        discordMessageId: message.id,
-                        sentMessage,
-                        isNewsletter: isNewsletterChat,
-                    });
-                    storeMessage(sentMessage);
-                    if (isNewsletterChat) {
-                        const ackErrorCode = await waitForNewsletterAckError(sentMessage?.key?.id);
-                        if (ackErrorCode) {
-                            clearFailedNewsletterMapping({
-                                discordMessageId: message.id,
-                                sentMessage,
-                            });
-                            state.logger?.warn?.({
-                                jid: targetJid,
-                                discordMessageId: message.id,
-                                outboundId: sentMessage?.key?.id,
-                                error: ackErrorCode,
-                            }, 'Newsletter attachment send was rejected by WhatsApp ack');
-                            continue;
+                let attachmentContent = doc;
+                let didBufferRetry = false;
+                let sentAttachment = false;
+                while (!sentAttachment) {
+                    try {
+                        const { ackErrorCode } = await sendTrackedMessage(
+                            attachmentContent,
+                            first ? options : undefined,
+                            { ackContext: 'Newsletter attachment send' },
+                        );
+                        if (!ackErrorCode) {
+                            sentAnyAttachment = true;
+                            sentAttachment = true;
+                            break;
                         }
+                        if (!isNewsletterChat || didBufferRetry) {
+                            break;
+                        }
+                        const bufferRetryContent = await buildNewsletterBufferRetryContent(doc, preparedFile);
+                        if (!bufferRetryContent) {
+                            break;
+                        }
+                        didBufferRetry = true;
+                        attachmentContent = bufferRetryContent;
+                        state.logger?.warn?.({
+                            jid: targetJid,
+                            discordMessageId: message.id,
+                            attachmentName: preparedFile?.name,
+                        }, 'Retrying newsletter attachment with buffer payload after ack rejection');
+                        continue;
+                    } catch (err) {
+                        if (!isNewsletterChat || didBufferRetry) {
+                            state.logger?.error(err);
+                            break;
+                        }
+                        const bufferRetryContent = await buildNewsletterBufferRetryContent(doc, preparedFile);
+                        if (!bufferRetryContent) {
+                            state.logger?.error(err);
+                            break;
+                        }
+                        didBufferRetry = true;
+                        attachmentContent = bufferRetryContent;
+                        state.logger?.warn?.({
+                            err,
+                            jid: targetJid,
+                            discordMessageId: message.id,
+                            attachmentName: preparedFile?.name,
+                        }, 'Retrying newsletter attachment with buffer payload after send failure');
                     }
-                    sentAnyAttachment = true;
-                } catch (err) {
-                    state.logger?.error(err);
                 }
                 if (first) {
                     first = false;
@@ -1578,13 +1735,13 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         try {
-            const sent = await sendWithNewsletterQuoteFallback(content, options);
-            mapDiscordMessageToWhatsAppMessage({
-                discordMessageId: message.id,
-                sentMessage: sent,
-                isNewsletter: isNewsletterChat,
+            const { ackErrorCode } = await sendTrackedMessage(content, options, {
+                ackContext: 'Newsletter text send',
+                notifyAckFailure: isNewsletterChat,
             });
-            storeMessage(sent);
+            if (ackErrorCode) {
+                return;
+            }
         } catch (err) {
             state.logger?.error(err);
             if (isNewsletterChat) {

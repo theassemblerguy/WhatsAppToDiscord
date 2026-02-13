@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
+import { WAMessageStatus } from '@whiskeysockets/baileys';
 
 import { resetClientFactoryOverrides, setClientFactoryOverrides } from '../src/clientFactories.js';
 import state from '../src/state.js';
@@ -1415,7 +1416,7 @@ test('Newsletter attachment failures fall back to text/link send', async () => {
         wa2dcForwardSnapshot: {
           content: 'snapshot text',
           attachments: [{
-            url: 'https://cdn.discordapp.com/attachments/file.png',
+            url: 'https://example.com/file.png',
             name: 'file.png',
             contentType: 'image/png',
           }],
@@ -1424,12 +1425,133 @@ test('Newsletter attachment failures fall back to text/link send', async () => {
       },
     });
 
-    await delay(0);
+    await delay(50);
 
     assert.equal(harness.fakeClient.sendCalls.length, 2);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.document?.url, 'https://cdn.discordapp.com/attachments/file.png');
-    assert.equal(harness.fakeClient.sendCalls[1]?.content?.text, 'Forwarded\nsnapshot text https://cdn.discordapp.com/attachments/file.png');
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.document?.url, 'https://example.com/file.png');
+    assert.equal(harness.fakeClient.sendCalls[1]?.content?.text, 'Forwarded\nsnapshot text https://example.com/file.png');
   } finally {
+    harness.cleanup();
+  }
+});
+
+test('Newsletter attachment ack rejection falls back to text/link send', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    utils.whatsapp.createDocumentContent = (attachment) => ({
+      image: { url: attachment.url },
+      mimetype: attachment.contentType,
+    });
+
+    harness.fakeClient.sendMessage = async (jid, content, options) => {
+      harness.fakeClient.sendCalls.push({ jid, content, options });
+      harness.fakeClient._sendCounter += 1;
+      const outboundId = content?.image
+        ? 'ack-media-reject-1'
+        : `ack-media-fallback-${harness.fakeClient._sendCounter}`;
+      if (content?.image) {
+        setTimeout(() => {
+          harness.fakeClient.ev.emit('messages.update', [{
+            key: { id: outboundId, remoteJid: jid, fromMe: true },
+            update: {
+              status: WAMessageStatus.ERROR,
+              messageStubParameters: ['479'],
+            },
+          }]);
+        }, 1500);
+      }
+      return { key: { id: outboundId, remoteJid: jid, server_id: `server-${harness.fakeClient._sendCounter}` } };
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '120363123456789@newsletter',
+      forwardContext: null,
+      message: {
+        id: 'dc-newsletter-attachment-ack-fallback',
+        content: '',
+        cleanContent: '',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map([
+          ['attachment-1', {
+            id: 'attachment-1',
+            url: 'https://example.com/newsletter-photo.png',
+            name: 'newsletter-photo.png',
+            contentType: 'image/png',
+          }],
+        ]),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(3000);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 2);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.image?.url, 'https://example.com/newsletter-photo.png');
+    assert.equal(harness.fakeClient.sendCalls[1]?.content?.text, 'https://example.com/newsletter-photo.png');
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('Newsletter attachment send retries with buffer payload when URL media send fails', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async () => new Response(Buffer.from('img-bytes'), {
+      status: 200,
+      headers: { 'content-length': '9' },
+    });
+    utils.whatsapp.createDocumentContent = (attachment) => ({
+      image: { url: attachment.url },
+      mimetype: attachment.contentType,
+    });
+
+    harness.fakeClient.sendMessage = async (jid, content, options) => {
+      harness.fakeClient.sendCalls.push({ jid, content, options });
+      if (content?.image?.url) {
+        throw new Error('newsletter URL media rejected');
+      }
+      harness.fakeClient._sendCounter += 1;
+      return { key: { id: `buffer-retry-success-${harness.fakeClient._sendCounter}`, remoteJid: jid, server_id: `buffer-retry-server-${harness.fakeClient._sendCounter}` } };
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '120363123456789@newsletter',
+      forwardContext: null,
+      message: {
+        id: 'dc-newsletter-buffer-retry',
+        content: '',
+        cleanContent: '',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map([
+          ['attachment-1', {
+            id: 'attachment-1',
+            url: 'https://cdn.discordapp.com/attachments/123/456/newsletter-photo.png',
+            name: 'newsletter-photo.png',
+            contentType: 'image/png',
+          }],
+        ]),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(2800);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 2);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.image?.url, 'https://cdn.discordapp.com/attachments/123/456/newsletter-photo.png');
+    assert.ok(Buffer.isBuffer(harness.fakeClient.sendCalls[1]?.content?.image));
+  } finally {
+    global.fetch = originalFetch;
     harness.cleanup();
   }
 });

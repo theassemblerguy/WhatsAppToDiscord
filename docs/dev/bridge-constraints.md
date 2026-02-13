@@ -1,7 +1,7 @@
 # Bridge Constraints
 
 > Owner: WA2DC maintainers
-> Last reviewed: 2026-02-12
+> Last reviewed: 2026-02-13
 > Scope: Message-routing and identity constraints that prevent regressions.
 
 ## Echo-loop prevention
@@ -44,8 +44,8 @@ Routing may be restricted by deployment settings. Message-flow changes must pres
   on Discord -> WhatsApp sends)
 - newsletter delivery mode for WhatsApp `@newsletter` chats:
   use standard `sendMessage`, attempt quote threading for replies, and fall back to plain reply-context text if quote payloads fail.
-  Prefer text/link fallback when media send fails.
+  For media, wait for newsletter ack outcomes before treating sends as successful; if URL media is rejected and the source is Discord CDN, retry with a buffer payload, then fall back to text/link delivery.
   Use `newsletterReactMessage(jid, serverId, reaction?)` (not generic `sendMessage(...react...)`) for reactions.
-  Poll sends to newsletters should try interactive payload first, then fall back to text on send or ack rejection (commonly ack error `479`).
+  Poll sends to newsletters should try interactive payload first, then fall back to text on send or ack rejection (commonly ack error `479`), with the same bounded ack wait policy.
   Mirror incoming WhatsApp newsletter reactions via `newsletter.reaction` events and key them by `server_id`.
-  Track/resolve newsletter `server_id` mapping from outbound message ids before reaction/delete/edit actions, including bounded wait-and-retry behavior.
+  Track/resolve newsletter `server_id` mapping from outbound message ids before reaction/delete/edit actions, including bounded wait-and-retry behavior and explicit timeout feedback.

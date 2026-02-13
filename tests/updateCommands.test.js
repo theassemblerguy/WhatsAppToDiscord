@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 
 import { resetClientFactoryOverrides, setClientFactoryOverrides } from '../src/clientFactories.js';
+import { noteNewsletterAckError } from '../src/newsletterBridge.js';
 import state from '../src/state.js';
 import storage from '../src/storage.js';
 import utils from '../src/utils.js';
@@ -459,6 +460,7 @@ test('/poll in a newsletter-linked channel sends interactive payload first', asy
           key: {
             id: 'poll-msg-1',
             remoteJid: jid,
+            server_id: 'poll-server-1',
           },
         };
       },
@@ -482,7 +484,7 @@ test('/poll in a newsletter-linked channel sends interactive payload first', asy
       },
     });
     fakeClient.emit('interactionCreate', interaction);
-    await delay(1300);
+    await delay(2600);
 
     assert.equal(sendCalls.length, 1);
     assert.equal(sendCalls[0]?.jid, '120363123456789012@newsletter');
@@ -576,6 +578,105 @@ test('/poll in a newsletter-linked channel falls back to text when interactive s
     assert.equal(
       interaction.records.editReply[0]?.content,
       'Interactive newsletter poll failed, so WA2DC sent a text fallback poll.',
+    );
+  } finally {
+    utils.discord.getGuild = originalDiscordUtils.getGuild;
+    utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+
+    state.settings.Token = originalSettings.Token;
+    state.settings.GuildID = originalSettings.GuildID;
+    state.settings.ControlChannelID = originalSettings.ControlChannelID;
+
+    state.dcClient = originalDcClient;
+    state.waClient = originalWaClient;
+    restoreObject(state.chats, originalChats);
+    resetClientFactoryOverrides();
+  }
+});
+
+test('/poll in a newsletter-linked channel falls back to text when interactive ack is rejected', async () => {
+  const originalDiscordUtils = {
+    getGuild: utils.discord.getGuild,
+    getControlChannel: utils.discord.getControlChannel,
+  };
+  const originalSettings = {
+    Token: state.settings.Token,
+    GuildID: state.settings.GuildID,
+    ControlChannelID: state.settings.ControlChannelID,
+  };
+  const originalDcClient = state.dcClient;
+  const originalWaClient = state.waClient;
+  const originalChats = { ...state.chats };
+
+  try {
+    state.settings.Token = 'TEST_TOKEN';
+    state.settings.GuildID = 'guild';
+    state.settings.ControlChannelID = 'control';
+    restoreObject(state.chats, {
+      '120363123456789012@newsletter': { channelId: 'newsletter-room' },
+    });
+
+    utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
+    utils.discord.getControlChannel = async () => ({ send: async () => {} });
+
+    const sendCalls = [];
+    state.waClient = {
+      async sendMessage(jid, content) {
+        sendCalls.push({ jid, content });
+        if (content?.poll) {
+          setTimeout(() => {
+            noteNewsletterAckError({
+              messageId: 'poll-msg-ack-reject',
+              jid,
+              errorCode: '479',
+            });
+          }, 1400);
+          return {
+            key: {
+              id: 'poll-msg-ack-reject',
+              remoteJid: jid,
+              server_id: 'poll-server-ack-reject',
+            },
+          };
+        }
+        return {
+          key: {
+            id: 'poll-msg-fallback-ack-1',
+            remoteJid: jid,
+            server_id: 'poll-server-fallback-ack-1',
+          },
+        };
+      },
+    };
+
+    const fakeClient = new FakeDiscordClient();
+    setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+    const discordHandler = await importDiscordHandler('poll-newsletter-ack-fallback');
+    state.dcClient = await discordHandler.start();
+    await delay(0);
+
+    const interaction = createInteraction({
+      channelId: 'newsletter-room',
+      commandName: 'poll',
+      stringOptions: {
+        question: 'Bridge poll?',
+        options: 'Yes,No',
+      },
+      integerOptions: {
+        select: 1,
+      },
+    });
+    fakeClient.emit('interactionCreate', interaction);
+    await delay(2600);
+
+    assert.equal(sendCalls.length, 2);
+    assert.equal(sendCalls[0]?.jid, '120363123456789012@newsletter');
+    assert.equal(sendCalls[0]?.content?.poll?.name, 'Bridge poll?');
+    assert.equal(typeof sendCalls[1]?.content?.text, 'string');
+    assert.ok(sendCalls[1]?.content?.text?.includes('📊 Poll: Bridge poll?'));
+    assert.equal(
+      interaction.records.editReply[0]?.content,
+      'Interactive newsletter poll was rejected (ack 479), so WA2DC sent a text fallback poll.',
     );
   } finally {
     utils.discord.getGuild = originalDiscordUtils.getGuild;

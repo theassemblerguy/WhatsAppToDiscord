@@ -10,6 +10,7 @@ import messageStore from './messageStore.js';
 import { createDiscordClient } from './clientFactories.js';
 import { resolveRestartFlagPath } from './runnerLogic.js';
 import {
+  getNewsletterServerIdFromMessage,
   isLikelyNewsletterServerId,
   normalizeBridgeMessageId,
   resolveNewsletterServerIdForDiscordMessage,
@@ -54,6 +55,13 @@ const DISCORD_FORWARD_CONTEXT_TTL_MS = 5 * 60 * 1000;
 const DISCORD_MESSAGE_LOCATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS = 8000;
 const NEWSLETTER_SERVER_ID_WAIT_POLL_MS = 150;
+const NEWSLETTER_ACK_WAIT_WITH_SERVER_ID_MS = 2500;
+const NEWSLETTER_ACK_WAIT_WITHOUT_SERVER_ID_MS = 8000;
+const newsletterAckWaitMsForSentMessage = (sentMessage) => (
+  getNewsletterServerIdFromMessage(sentMessage)
+    ? NEWSLETTER_ACK_WAIT_WITH_SERVER_ID_MS
+    : NEWSLETTER_ACK_WAIT_WITHOUT_SERVER_ID_MS
+);
 const discordForwardContextCache = new Map();
 const discordForwardContextTimers = new Map();
 const discordMessageLocationCache = new Map();
@@ -2462,7 +2470,8 @@ const commandHandlers = {
         try {
           const sentInteractive = await state.waClient.sendMessage(normalizedJid, pollPayload);
           messageStore.set(sentInteractive);
-          ackErrorCode = await waitForNewsletterAckError(sentInteractive?.key?.id, 1200);
+          const ackWaitMs = newsletterAckWaitMsForSentMessage(sentInteractive);
+          ackErrorCode = await waitForNewsletterAckError(sentInteractive?.key?.id, ackWaitMs);
           if (!ackErrorCode) {
             await ctx.reply('Interactive newsletter poll sent to WhatsApp!');
             return;
