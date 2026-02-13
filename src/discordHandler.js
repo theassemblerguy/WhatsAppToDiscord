@@ -11,6 +11,7 @@ import { createDiscordClient } from './clientFactories.js';
 import { resolveRestartFlagPath } from './runnerLogic.js';
 import {
   getNewsletterAckError,
+  getNewsletterMessageDebug,
   getPendingNewsletterSend,
   getNewsletterServerIdFromMessage,
   isLikelyNewsletterServerId,
@@ -1029,7 +1030,10 @@ client.on('whatsappReaction', async (reaction) => {
       }, 'Skipping WhatsApp reaction mirror because Discord channel is unavailable');
       return;
     }
-    const message = await channel.messages.fetch(messageId).catch(() => null);
+    const cachedMessage = typeof channel?.messages?.cache?.get === 'function'
+      ? channel.messages.cache.get(messageId)
+      : null;
+    const message = cachedMessage || await channel.messages.fetch(messageId).catch(() => null);
     if (!message) {
       state.logger?.debug?.({
         jid: normalizedReactionJid,
@@ -2217,6 +2221,14 @@ const commandHandlers = {
 
       const waIds = collectMappedWhatsAppIdsForDiscordMessage(normalizedDiscordMessageId);
       const directMappedId = normalizeBridgeMessageId(state.lastMessages?.[normalizedDiscordMessageId]);
+      const resolvedServerId = resolveNewsletterServerIdForDiscordMessage(
+        normalizedDiscordMessageId,
+        directMappedId,
+        state.lastMessages,
+      );
+      const linkedChannelId = targetJid
+        ? (state.chats?.[targetJid]?.channelId || null)
+        : null;
       const pendingByDiscordId = getPendingNewsletterSend({
         jid: targetJid || null,
         discordMessageId: normalizedDiscordMessageId,
@@ -2260,12 +2272,19 @@ const commandHandlers = {
           });
         });
       }
+      const operationHistory = getNewsletterMessageDebug({
+        discordMessageId: normalizedDiscordMessageId,
+        jid: targetJid || null,
+        limit: 30,
+      });
 
       const debugPayload = {
         discordMessageId: normalizedDiscordMessageId,
         newsletterJid: targetJid || null,
+        linkedChannelId,
         directMappedId: directMappedId || null,
         directMappedIdLooksServer: isLikelyNewsletterServerId(directMappedId),
+        resolvedServerId: isLikelyNewsletterServerId(resolvedServerId) ? resolvedServerId : null,
         mappedWaIds: waIds,
         reverseMap,
         sentMessageFlags,
@@ -2279,12 +2298,14 @@ const commandHandlers = {
           timestamp: pending.timestamp || null,
         } : null,
         messageStoreEntries,
+        operationHistory,
       };
 
       const lines = [
         `Discord message ID: \`${normalizedDiscordMessageId}\``,
         `Newsletter JID: ${targetJid ? `\`${formatNewsletterJidForReply(targetJid)}\`` : '`(not provided / not linked channel)`'}`,
         `Direct map: \`${directMappedId || '(none)'}\``,
+        `Resolved server ID: \`${isLikelyNewsletterServerId(resolvedServerId) ? resolvedServerId : '(none)'}\``,
         `Mapped WA IDs: ${waIds.length ? waIds.map((id) => `\`${id}\``).join(', ') : '(none)'}`,
       ];
       if (Object.keys(ackErrors).length) {
@@ -2292,6 +2313,13 @@ const commandHandlers = {
       }
       if (pending) {
         lines.push(`Pending send: outbound=\`${pending.outboundId || '(none)'}\`, type=${pending.type || '(none)'}`);
+      }
+      if (operationHistory.length) {
+        const historyLine = operationHistory
+          .slice(-5)
+          .map((entry) => `${entry.operation || 'op'}:${entry.phase || 'phase'}`)
+          .join(', ');
+        lines.push(`Recent ops: ${historyLine}`);
       }
       lines.push('', 'Raw debug payload:', `\`\`\`json\n${formatJsonForReply(debugPayload)}\n\`\`\``);
       await ctx.replyPartitioned(lines.join('\n'));

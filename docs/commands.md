@@ -96,7 +96,7 @@ Usage: `/newslettermessages jid:<optional ...@newsletter> count:<1-50> before:<u
 ### `/newslettermessagedebug`
 Inspect WA2DC mapping/debug data for a newsletter-linked Discord message.  
 Usage: `/newslettermessagedebug messageid:<discord message id> jid:<optional ...@newsletter>`  
-Shows the current Discord->WhatsApp ID mapping, pending send correlation data, sent flags, and any cached newsletter ack errors.
+Shows Discord->WhatsApp ID mapping, resolved `server_id`, pending correlation, sent flags, cached ack errors, and recent per-message newsletter operation history.
 
 ### `/newsletterreact`
 React to a newsletter message (or remove your reaction).  

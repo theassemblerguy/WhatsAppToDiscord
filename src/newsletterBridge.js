@@ -5,10 +5,13 @@ const DEFAULT_NEWSLETTER_ACK_WAIT_MS = 1200;
 const NEWSLETTER_PENDING_SEND_TTL_MS = 2 * 60 * 1000;
 const NEWSLETTER_PENDING_SEND_FALLBACK_WINDOW_MS = 20 * 1000;
 const NEWSLETTER_PENDING_SEND_MAX_PER_JID = 64;
+const NEWSLETTER_MESSAGE_DEBUG_TTL_MS = 30 * 60 * 1000;
+const NEWSLETTER_MESSAGE_DEBUG_MAX_PER_MESSAGE = 50;
 
 const newsletterAckErrors = new Map();
 const newsletterAckWaiters = new Map();
 const newsletterPendingSends = new Map();
+const newsletterMessageDebug = new Map();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -501,18 +504,93 @@ const getNewsletterAckError = (messageId) => {
   return newsletterAckErrors.get(normalizedMessageId)?.errorCode || null;
 };
 
+const pruneNewsletterMessageDebug = (discordMessageId = null) => {
+  const cutoff = Date.now() - NEWSLETTER_MESSAGE_DEBUG_TTL_MS;
+  const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
+  const keys = normalizedDiscordMessageId
+    ? [normalizedDiscordMessageId]
+    : [...newsletterMessageDebug.keys()];
+  for (const key of keys) {
+    const existing = newsletterMessageDebug.get(key);
+    if (!Array.isArray(existing) || !existing.length) {
+      newsletterMessageDebug.delete(key);
+      continue;
+    }
+    const next = existing.filter((entry) => (
+      entry
+      && typeof entry === 'object'
+      && typeof entry.timestamp === 'number'
+      && entry.timestamp >= cutoff
+    ));
+    if (next.length) {
+      newsletterMessageDebug.set(key, next);
+    } else {
+      newsletterMessageDebug.delete(key);
+    }
+  }
+};
+
+const noteNewsletterMessageDebug = ({
+  discordMessageId,
+  jid = null,
+  operation = '',
+  phase = '',
+  details = {},
+} = {}) => {
+  const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
+  if (!normalizedDiscordMessageId) return;
+  pruneNewsletterMessageDebug(normalizedDiscordMessageId);
+  const queue = newsletterMessageDebug.get(normalizedDiscordMessageId) || [];
+  const normalizedJid = normalizeBridgeMessageId(jid) || null;
+  const normalizedOperation = typeof operation === 'string' ? operation.trim() : '';
+  const normalizedPhase = typeof phase === 'string' ? phase.trim() : '';
+  const normalizedDetails = details && typeof details === 'object' ? details : {};
+
+  queue.push({
+    timestamp: Date.now(),
+    jid: normalizedJid,
+    operation: normalizedOperation,
+    phase: normalizedPhase,
+    ...normalizedDetails,
+  });
+  while (queue.length > NEWSLETTER_MESSAGE_DEBUG_MAX_PER_MESSAGE) {
+    queue.shift();
+  }
+  newsletterMessageDebug.set(normalizedDiscordMessageId, queue);
+};
+
+const getNewsletterMessageDebug = ({
+  discordMessageId,
+  jid = null,
+  limit = 25,
+} = {}) => {
+  const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
+  if (!normalizedDiscordMessageId) return [];
+  pruneNewsletterMessageDebug(normalizedDiscordMessageId);
+  const queue = newsletterMessageDebug.get(normalizedDiscordMessageId) || [];
+  const normalizedJid = normalizeBridgeMessageId(jid);
+  const filtered = normalizedJid
+    ? queue.filter((entry) => normalizeBridgeMessageId(entry?.jid) === normalizedJid)
+    : queue;
+  const boundedLimit = Number.isFinite(limit) ? Math.max(1, Math.trunc(limit)) : 25;
+  return filtered.slice(-boundedLimit);
+};
+
 const resetNewsletterBridgeState = () => {
   newsletterAckErrors.clear();
   newsletterAckWaiters.clear();
   newsletterPendingSends.clear();
+  newsletterMessageDebug.clear();
 };
 
 export {
   clearPendingNewsletterSends,
   getNewsletterAckError,
+  getNewsletterMessageDebug,
   getPendingNewsletterSend,
   getNewsletterServerIdFromMessage,
   isLikelyNewsletterServerId,
+  noteNewsletterMessageDebug,
   notePendingNewsletterSend,
   normalizeBridgeMessageId,
   noteNewsletterAckError,

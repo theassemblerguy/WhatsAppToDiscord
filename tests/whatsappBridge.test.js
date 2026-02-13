@@ -505,7 +505,8 @@ test('Discord newsletter deletes use normalized server ids', async () => {
 
     assert.equal(harness.fakeClient.sendCalls.length, 1);
     assert.equal(harness.fakeClient.sendCalls[0]?.jid, '1203630@newsletter');
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.delete?.id, 'newsletter-server-id-1');
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.delete?.server_id, 'newsletter-server-id-1');
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.delete?.id, '');
     assert.equal(harness.fakeClient.sendCalls[0]?.content?.delete?.remoteJid, '1203630@newsletter');
   } finally {
     harness.cleanup();
@@ -565,14 +566,16 @@ test('Newsletter edit/reaction/delete wait for server ids before sending actions
     assert.equal(notices.length, 0);
     const editCall = harness.fakeClient.sendCalls.find((call) => call.content?.edit);
     assert.ok(editCall);
-    assert.equal(editCall?.content?.edit?.id, 'server-edit-1');
+    assert.equal(editCall?.content?.edit?.server_id, 'server-edit-1');
+    assert.equal(editCall?.content?.edit?.id, '');
 
     assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
     assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'server-react-1');
 
     const deleteCall = harness.fakeClient.sendCalls.find((call) => call.content?.delete);
     assert.ok(deleteCall);
-    assert.equal(deleteCall?.content?.delete?.id, 'server-delete-1');
+    assert.equal(deleteCall?.content?.delete?.server_id, 'server-delete-1');
+    assert.equal(deleteCall?.content?.delete?.id, '');
   } finally {
     harness.cleanup();
   }
@@ -1799,10 +1802,11 @@ test('Newsletter attachment ack rejection falls back to text/link send', async (
     harness.fakeClient.sendMessage = async (jid, content, options) => {
       harness.fakeClient.sendCalls.push({ jid, content, options });
       harness.fakeClient._sendCounter += 1;
-      const outboundId = content?.image
-        ? 'ack-media-reject-1'
+      const isMediaSend = Boolean(content?.image || content?.video || content?.audio || content?.document);
+      const outboundId = isMediaSend
+        ? `ack-media-reject-${harness.fakeClient._sendCounter}`
         : `ack-media-fallback-${harness.fakeClient._sendCounter}`;
-      if (content?.image) {
+      if (isMediaSend) {
         setTimeout(() => {
           harness.fakeClient.ev.emit('messages.update', [{
             key: { id: outboundId, remoteJid: jid, fromMe: true },
@@ -1811,7 +1815,7 @@ test('Newsletter attachment ack rejection falls back to text/link send', async (
               messageStubParameters: ['479'],
             },
           }]);
-        }, 1500);
+        }, 120);
       }
       return { key: { id: outboundId, remoteJid: jid, server_id: `server-${harness.fakeClient._sendCounter}` } };
     };
@@ -1843,10 +1847,15 @@ test('Newsletter attachment ack rejection falls back to text/link send', async (
 
     await delay(3000);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 2);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.image?.url, 'https://example.com/newsletter-photo.png');
-    assert.equal(harness.fakeClient.sendCalls[1]?.content?.text, 'https://example.com/newsletter-photo.png');
-    assert.equal(harness.fakeClient.sendCalls[1]?.options?.getUrlInfo, undefined);
+    assert.ok(harness.fakeClient.sendCalls.length >= 2);
+    assert.ok(harness.fakeClient.sendCalls.some(
+      (call) => call?.content?.image?.url === 'https://example.com/newsletter-photo.png',
+    ));
+    const fallbackCall = [...harness.fakeClient.sendCalls]
+      .reverse()
+      .find((call) => typeof call?.content?.text === 'string');
+    assert.equal(fallbackCall?.content?.text, 'https://example.com/newsletter-photo.png');
+    assert.equal(fallbackCall?.options?.getUrlInfo, undefined);
   } finally {
     harness.cleanup();
   }

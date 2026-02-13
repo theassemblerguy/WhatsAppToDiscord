@@ -21,6 +21,7 @@ import { oneWayAllowsDiscordToWhatsApp, oneWayAllowsWhatsAppToDiscord } from './
 import {
     clearPendingNewsletterSends,
     getNewsletterAckError,
+    noteNewsletterMessageDebug,
     getPendingNewsletterSend,
     getNewsletterServerIdFromMessage,
     isLikelyNewsletterServerId,
@@ -531,6 +532,69 @@ const normalizeAttachmentForWhatsAppSend = (attachment = {}) => {
     normalized.contentType = mimetype;
     return normalized;
 };
+
+const getNewsletterMediaField = (content = {}) => {
+    if (content?.image) return ['image', content.image];
+    if (content?.video) return ['video', content.video];
+    if (content?.audio) return ['audio', content.audio];
+    if (content?.document) return ['document', content.document];
+    return [null, null];
+};
+
+const summarizeNewsletterContentForDebug = (content = {}) => {
+    const [kind, media] = getNewsletterMediaField(content);
+    const source = Buffer.isBuffer(media)
+        ? 'buffer'
+        : (media instanceof Uint8Array
+            ? 'uint8array'
+            : (media && typeof media === 'object' && typeof media.url === 'string'
+                ? 'url'
+                : (typeof media === 'string' ? 'string' : 'none')));
+    return {
+        kind: kind || (typeof content?.text === 'string' ? 'text' : 'unknown'),
+        source,
+        textLength: typeof content?.text === 'string' ? content.text.length : 0,
+        captionLength: typeof content?.caption === 'string' ? content.caption.length : 0,
+        mimetype: typeof content?.mimetype === 'string' ? content.mimetype : null,
+        fileName: typeof content?.fileName === 'string' ? content.fileName : null,
+    };
+};
+
+const buildNewsletterDocumentFallbackContent = (content = {}, preparedFile = {}) => {
+    const [kind, media] = getNewsletterMediaField(content);
+    if (!kind || !media || kind === 'document') {
+        return null;
+    }
+    const fallback = {
+        document: media,
+        fileName: preparedFile?.name || content?.fileName || 'attachment.bin',
+        mimetype: preparedFile?.contentType || content?.mimetype || 'application/octet-stream',
+    };
+    if (typeof content?.caption === 'string' && content.caption) {
+        fallback.caption = content.caption;
+    }
+    return fallback;
+};
+
+const buildNewsletterActionKey = ({ remoteJid, actionId, fromMe = true } = {}) => {
+    const normalizedRemoteJid = normalizeSendJid(remoteJid);
+    const normalizedActionId = normalizeBridgeMessageId(actionId);
+    if (!normalizedRemoteJid || !normalizedActionId) {
+        return null;
+    }
+    const key = {
+        remoteJid: normalizedRemoteJid,
+        fromMe: Boolean(fromMe),
+    };
+    if (isLikelyNewsletterServerId(normalizedActionId)) {
+        key.id = '';
+        key.server_id = normalizedActionId;
+    } else {
+        key.id = normalizedActionId;
+    }
+    return key;
+};
+
 const buildSendOptionsForJid = (jid) => {
     const normalizedJid = normalizeSendJid(jid);
     return isBroadcastJid(normalizedJid) ? { broadcast: true } : {};
@@ -2361,6 +2425,16 @@ const connectToWhatsApp = async (retry = 1) => {
             } = {},
         ) => {
             if (newsletterChat) {
+                noteNewsletterMessageDebug({
+                    discordMessageId: message.id,
+                    jid: targetJid,
+                    operation: ackContext,
+                    phase: 'attempt',
+                    details: {
+                        ...summarizeNewsletterContentForDebug(content),
+                        hasQuoted: Boolean(sendOptions?.quoted),
+                    },
+                });
                 await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
             }
             const sentMessage = await sendWithNewsletterQuoteFallback(content, sendOptions);
@@ -2377,6 +2451,18 @@ const connectToWhatsApp = async (retry = 1) => {
                     content,
                 });
             }
+            if (newsletterChat) {
+                noteNewsletterMessageDebug({
+                    discordMessageId: message.id,
+                    jid: targetJid,
+                    operation: ackContext,
+                    phase: 'sent',
+                    details: {
+                        outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
+                        serverId: normalizeBridgeMessageId(getNewsletterServerIdFromMessage(sentMessage)),
+                    },
+                });
+            }
             storeMessage(sentMessage);
             const shouldTrackNewsletterAck = newsletterChat && (useNewsletterSpecialFlow || forceNewsletterAck);
             const notifyNewsletterAckFailure = async (ackErrorCode) => {
@@ -2391,6 +2477,17 @@ const connectToWhatsApp = async (retry = 1) => {
                     serverId: getNewsletterServerIdFromMessage(sentMessage),
                     error: ackErrorCode,
                 }, `${ackContext} was rejected by WhatsApp ack`);
+                noteNewsletterMessageDebug({
+                    discordMessageId: message.id,
+                    jid: targetJid,
+                    operation: ackContext,
+                    phase: 'ack_rejected',
+                    details: {
+                        outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
+                        serverId: normalizeBridgeMessageId(getNewsletterServerIdFromMessage(sentMessage)),
+                        error: normalizeBridgeMessageId(ackErrorCode),
+                    },
+                });
                 if (notifyAckFailure) {
                     await message.channel?.send(
                         `Couldn't send this message to WhatsApp newsletter (ack ${ackErrorCode}).`,
@@ -2412,6 +2509,17 @@ const connectToWhatsApp = async (retry = 1) => {
             const ackWaitMs = newsletterAckWaitMsForSentMessage(sentMessage);
             const ackErrorCode = await waitForNewsletterAckError(sentMessage?.key?.id, ackWaitMs);
             if (!ackErrorCode) {
+                noteNewsletterMessageDebug({
+                    discordMessageId: message.id,
+                    jid: targetJid,
+                    operation: ackContext,
+                    phase: 'ack_ok',
+                    details: {
+                        outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
+                        serverId: normalizeBridgeMessageId(getNewsletterServerIdFromMessage(sentMessage)),
+                        ackWaitMs,
+                    },
+                });
                 return { sentMessage, ackErrorCode: null };
             }
 
@@ -2467,57 +2575,130 @@ const connectToWhatsApp = async (retry = 1) => {
                     if (captionText || mentionJids.length) doc.caption = captionText;
                     if (!newsletterChat && mentionJids.length) doc.mentions = mentionJids;
                 }
-                let attachmentContent = doc;
-                let didBufferRetry = false;
                 let sentAttachment = false;
-                while (!sentAttachment) {
-                    try {
-                        const { ackErrorCode } = await sendTrackedMessage(
-                            attachmentContent,
-                            first ? options : undefined,
-                            {
-                                ackContext: 'Newsletter attachment send',
-                                forceNewsletterAck: newsletterChat,
+                const attachmentVariants = [
+                    { label: 'native', content: doc },
+                ];
+                const documentFallback = newsletterChat
+                    ? buildNewsletterDocumentFallbackContent(doc, preparedFile)
+                    : null;
+                if (documentFallback) {
+                    attachmentVariants.push({
+                        label: 'document-fallback',
+                        content: documentFallback,
+                    });
+                }
+
+                for (const variant of attachmentVariants) {
+                    let attachmentContent = variant.content;
+                    let didBufferRetry = false;
+                    while (!sentAttachment) {
+                        const contentSummary = summarizeNewsletterContentForDebug(attachmentContent);
+                        noteNewsletterMessageDebug({
+                            discordMessageId: message.id,
+                            jid: targetJid,
+                            operation: 'Newsletter attachment send',
+                            phase: 'variant_attempt',
+                            details: {
+                                variant: variant.label,
+                                attachmentName: preparedFile?.name || null,
+                                ...contentSummary,
                             },
-                        );
-                        if (!ackErrorCode) {
-                            sentAnyAttachment = true;
-                            sentAttachment = true;
-                            break;
+                        });
+                        try {
+                            const { ackErrorCode } = await sendTrackedMessage(
+                                attachmentContent,
+                                first ? options : undefined,
+                                {
+                                    ackContext: 'Newsletter attachment send',
+                                    forceNewsletterAck: newsletterChat,
+                                },
+                            );
+                            if (!ackErrorCode) {
+                                sentAnyAttachment = true;
+                                sentAttachment = true;
+                                break;
+                            }
+                            if (!newsletterChat || didBufferRetry) {
+                                break;
+                            }
+                            const bufferRetryContent = await buildNewsletterBufferRetryContent(attachmentContent, preparedFile);
+                            if (!bufferRetryContent) {
+                                break;
+                            }
+                            didBufferRetry = true;
+                            attachmentContent = bufferRetryContent;
+                            noteNewsletterMessageDebug({
+                                discordMessageId: message.id,
+                                jid: targetJid,
+                                operation: 'Newsletter attachment send',
+                                phase: 'retry_buffer_after_ack',
+                                details: {
+                                    variant: variant.label,
+                                    attachmentName: preparedFile?.name || null,
+                                },
+                            });
+                            state.logger?.warn?.({
+                                jid: targetJid,
+                                discordMessageId: message.id,
+                                attachmentName: preparedFile?.name,
+                                variant: variant.label,
+                            }, 'Retrying newsletter attachment with buffer payload after ack rejection');
+                            continue;
+                        } catch (err) {
+                            if (!newsletterChat || didBufferRetry) {
+                                state.logger?.error(err);
+                                noteNewsletterMessageDebug({
+                                    discordMessageId: message.id,
+                                    jid: targetJid,
+                                    operation: 'Newsletter attachment send',
+                                    phase: 'send_error',
+                                    details: {
+                                        variant: variant.label,
+                                        attachmentName: preparedFile?.name || null,
+                                        error: normalizeBridgeMessageId(err?.output?.statusCode || err?.statusCode || err?.code || err?.message || 'send_error'),
+                                    },
+                                });
+                                break;
+                            }
+                            const bufferRetryContent = await buildNewsletterBufferRetryContent(attachmentContent, preparedFile);
+                            if (!bufferRetryContent) {
+                                state.logger?.error(err);
+                                noteNewsletterMessageDebug({
+                                    discordMessageId: message.id,
+                                    jid: targetJid,
+                                    operation: 'Newsletter attachment send',
+                                    phase: 'send_error_no_buffer_retry',
+                                    details: {
+                                        variant: variant.label,
+                                        attachmentName: preparedFile?.name || null,
+                                    },
+                                });
+                                break;
+                            }
+                            didBufferRetry = true;
+                            attachmentContent = bufferRetryContent;
+                            noteNewsletterMessageDebug({
+                                discordMessageId: message.id,
+                                jid: targetJid,
+                                operation: 'Newsletter attachment send',
+                                phase: 'retry_buffer_after_send_error',
+                                details: {
+                                    variant: variant.label,
+                                    attachmentName: preparedFile?.name || null,
+                                },
+                            });
+                            state.logger?.warn?.({
+                                err,
+                                jid: targetJid,
+                                discordMessageId: message.id,
+                                attachmentName: preparedFile?.name,
+                                variant: variant.label,
+                            }, 'Retrying newsletter attachment with buffer payload after send failure');
                         }
-                        if (!newsletterChat || didBufferRetry) {
-                            break;
-                        }
-                        const bufferRetryContent = await buildNewsletterBufferRetryContent(doc, preparedFile);
-                        if (!bufferRetryContent) {
-                            break;
-                        }
-                        didBufferRetry = true;
-                        attachmentContent = bufferRetryContent;
-                        state.logger?.warn?.({
-                            jid: targetJid,
-                            discordMessageId: message.id,
-                            attachmentName: preparedFile?.name,
-                        }, 'Retrying newsletter attachment with buffer payload after ack rejection');
-                        continue;
-                    } catch (err) {
-                        if (!newsletterChat || didBufferRetry) {
-                            state.logger?.error(err);
-                            break;
-                        }
-                        const bufferRetryContent = await buildNewsletterBufferRetryContent(doc, preparedFile);
-                        if (!bufferRetryContent) {
-                            state.logger?.error(err);
-                            break;
-                        }
-                        didBufferRetry = true;
-                        attachmentContent = bufferRetryContent;
-                        state.logger?.warn?.({
-                            err,
-                            jid: targetJid,
-                            discordMessageId: message.id,
-                            attachmentName: preparedFile?.name,
-                        }, 'Retrying newsletter attachment with buffer payload after send failure');
+                    }
+                    if (sentAttachment) {
+                        break;
                     }
                 }
                 if (first) {
@@ -2533,6 +2714,15 @@ const connectToWhatsApp = async (retry = 1) => {
                     discordMessageId: message.id,
                     attachments: attemptedAttachmentSends,
                 }, 'All attachment sends failed; falling back to text/link send');
+                noteNewsletterMessageDebug({
+                    discordMessageId: message.id,
+                    jid: targetJid,
+                    operation: 'Newsletter attachment send',
+                    phase: 'all_variants_failed',
+                    details: {
+                        attachments: attemptedAttachmentSends,
+                    },
+                });
             }
         }
 
@@ -2670,13 +2860,30 @@ const connectToWhatsApp = async (retry = 1) => {
             }
         }
 
-        const key = {
-            id: messageId,
-            fromMe: message.webhookId == null || message.author.username === 'You',
-            remoteJid: targetJid,
-        };
+        const key = newsletterChat
+            ? buildNewsletterActionKey({
+                remoteJid: targetJid,
+                actionId: messageId,
+                fromMe: true,
+            })
+            : {
+                id: messageId,
+                fromMe: message.webhookId == null || message.author.username === 'You',
+                remoteJid: targetJid,
+            };
+        if (!key) {
+            state.logger?.warn?.({
+                jid: targetJid,
+                discordMessageId: message?.id,
+                messageId,
+            }, 'Skipping newsletter edit because action key could not be built');
+            await message.channel.send(
+                "Couldn't edit this newsletter message because a valid action key could not be built.",
+            ).catch(() => {});
+            return;
+        }
 
-        if (targetJid.endsWith('@g.us')) {
+        if (!newsletterChat && targetJid.endsWith('@g.us')) {
             key.participant = utils.whatsapp.toJid(message.author.username);
         }
 
@@ -2713,19 +2920,104 @@ const connectToWhatsApp = async (retry = 1) => {
         text = mentionResolution.text;
         const editMentions = mentionResolution.mentionJids;
         const editOptions = buildSendOptionsForJid(targetJid);
-        try {
+        const sendEditWithKey = async (editKey, mode = 'default') => {
+            if (newsletterChat) {
+                noteNewsletterMessageDebug({
+                    discordMessageId: message.id,
+                    jid: targetJid,
+                    operation: 'Newsletter edit',
+                    phase: 'attempt',
+                    details: {
+                        mode,
+                        targetId: normalizeBridgeMessageId(messageId),
+                        keyId: normalizeBridgeMessageId(editKey?.id),
+                        keyServerId: normalizeBridgeMessageId(editKey?.server_id || editKey?.serverId),
+                        textLength: typeof text === 'string' ? text.length : 0,
+                    },
+                });
+            }
             const editMsg = await client.sendMessage(
                 targetJid,
                 {
                     text,
-                    edit: key,
+                    edit: editKey,
                     ...(!newsletterChat && editMentions.length ? { mentions: editMentions } : {}),
                 },
                 editOptions,
             );
             state.sentMessages.add(editMsg.key.id);
+            if (!newsletterChat) {
+                return { editMsg, ackErrorCode: null };
+            }
+            const ackWaitMs = newsletterAckWaitMsForSentMessage(editMsg);
+            const ackErrorCode = await waitForNewsletterAckError(editMsg?.key?.id, ackWaitMs);
+            if (ackErrorCode) {
+                noteNewsletterMessageDebug({
+                    discordMessageId: message.id,
+                    jid: targetJid,
+                    operation: 'Newsletter edit',
+                    phase: 'ack_rejected',
+                    details: {
+                        mode,
+                        outboundId: normalizeBridgeMessageId(editMsg?.key?.id),
+                        error: normalizeBridgeMessageId(ackErrorCode),
+                    },
+                });
+            } else {
+                noteNewsletterMessageDebug({
+                    discordMessageId: message.id,
+                    jid: targetJid,
+                    operation: 'Newsletter edit',
+                    phase: 'ack_ok',
+                    details: {
+                        mode,
+                        outboundId: normalizeBridgeMessageId(editMsg?.key?.id),
+                        ackWaitMs,
+                    },
+                });
+            }
+            return { editMsg, ackErrorCode };
+        };
+
+        try {
+            const primaryResult = await sendEditWithKey(key, key?.server_id ? 'server_id_key' : 'id_key');
+            if (newsletterChat && primaryResult?.ackErrorCode && key?.server_id) {
+                const fallbackKey = {
+                    remoteJid: targetJid,
+                    id: normalizeBridgeMessageId(messageId),
+                    fromMe: true,
+                };
+                state.logger?.warn?.({
+                    jid: targetJid,
+                    discordMessageId: message?.id,
+                    targetId: normalizeBridgeMessageId(messageId),
+                    error: primaryResult.ackErrorCode,
+                }, 'Newsletter edit with server_id key was rejected; retrying with id key');
+                const fallbackResult = await sendEditWithKey(fallbackKey, 'id_key_fallback');
+                if (!fallbackResult?.ackErrorCode) {
+                    return;
+                }
+                await message.channel.send(
+                    `Couldn't edit this newsletter message (ack ${fallbackResult.ackErrorCode}). WhatsApp rejected the edit request.`,
+                ).catch(() => {});
+                return;
+            }
+            if (newsletterChat && primaryResult?.ackErrorCode) {
+                await message.channel.send(
+                    `Couldn't edit this newsletter message (ack ${primaryResult.ackErrorCode}). WhatsApp rejected the edit request.`,
+                ).catch(() => {});
+            }
         } catch (err) {
             state.logger?.error(err);
+            noteNewsletterMessageDebug({
+                discordMessageId: message.id,
+                jid: targetJid,
+                operation: 'Newsletter edit',
+                phase: 'send_error',
+                details: {
+                    error: normalizeBridgeMessageId(err?.output?.statusCode || err?.statusCode || err?.code || err?.message || 'send_error'),
+                },
+            });
             await message.channel.send("Couldn't edit the message on WhatsApp.");
         }
     });
@@ -2906,16 +3198,120 @@ const connectToWhatsApp = async (retry = 1) => {
             }, 'Timed out waiting for newsletter server ID before delete; falling back to outbound message ID');
         }
         const deleteOptions = buildSendOptionsForJid(targetJid);
+        const sendDeleteWithKey = async (deleteKey, mode = 'default') => {
+            if (newsletterChat) {
+                noteNewsletterMessageDebug({
+                    discordMessageId,
+                    jid: targetJid,
+                    operation: 'Newsletter delete',
+                    phase: 'attempt',
+                    details: {
+                        mode,
+                        targetId: normalizeBridgeMessageId(actionDeleteId),
+                        keyId: normalizeBridgeMessageId(deleteKey?.id),
+                        keyServerId: normalizeBridgeMessageId(deleteKey?.server_id || deleteKey?.serverId),
+                    },
+                });
+            }
+            const sentDelete = await client.sendMessage(targetJid, {
+                delete: deleteKey,
+            }, deleteOptions);
+            if (!newsletterChat) {
+                return { sentDelete, ackErrorCode: null };
+            }
+            const ackWaitMs = newsletterAckWaitMsForSentMessage(sentDelete);
+            const ackErrorCode = await waitForNewsletterAckError(sentDelete?.key?.id, ackWaitMs);
+            if (ackErrorCode) {
+                noteNewsletterMessageDebug({
+                    discordMessageId,
+                    jid: targetJid,
+                    operation: 'Newsletter delete',
+                    phase: 'ack_rejected',
+                    details: {
+                        mode,
+                        outboundId: normalizeBridgeMessageId(sentDelete?.key?.id),
+                        error: normalizeBridgeMessageId(ackErrorCode),
+                    },
+                });
+            } else {
+                noteNewsletterMessageDebug({
+                    discordMessageId,
+                    jid: targetJid,
+                    operation: 'Newsletter delete',
+                    phase: 'ack_ok',
+                    details: {
+                        mode,
+                        outboundId: normalizeBridgeMessageId(sentDelete?.key?.id),
+                        ackWaitMs,
+                    },
+                });
+            }
+            return { sentDelete, ackErrorCode };
+        };
+
         try {
-            await client.sendMessage(targetJid, {
-                delete: {
+            const primaryDeleteKey = newsletterChat
+                ? buildNewsletterActionKey({
+                    remoteJid: targetJid,
+                    actionId: actionDeleteId,
+                    fromMe: true,
+                })
+                : {
                     remoteJid: targetJid,
                     id: actionDeleteId,
                     fromMe: true,
-                },
-            }, deleteOptions);
+                };
+            if (!primaryDeleteKey) {
+                state.logger?.warn?.({
+                    jid: targetJid,
+                    discordMessageId,
+                    actionDeleteId,
+                }, 'Skipping newsletter delete because action key could not be built');
+                return;
+            }
+            const primaryDeleteResult = await sendDeleteWithKey(
+                primaryDeleteKey,
+                primaryDeleteKey?.server_id ? 'server_id_key' : 'id_key',
+            );
+            if (newsletterChat && primaryDeleteResult?.ackErrorCode && primaryDeleteKey?.server_id) {
+                const fallbackDeleteKey = {
+                    remoteJid: targetJid,
+                    id: normalizeBridgeMessageId(actionDeleteId),
+                    fromMe: true,
+                };
+                state.logger?.warn?.({
+                    jid: targetJid,
+                    discordMessageId,
+                    actionDeleteId: normalizeBridgeMessageId(actionDeleteId),
+                    error: primaryDeleteResult.ackErrorCode,
+                }, 'Newsletter delete with server_id key was rejected; retrying with id key');
+                const fallbackDeleteResult = await sendDeleteWithKey(fallbackDeleteKey, 'id_key_fallback');
+                if (!fallbackDeleteResult?.ackErrorCode) {
+                    return;
+                }
+                await notifyLinkedDiscordChannel(
+                    targetJid,
+                    `Couldn't delete this newsletter message (ack ${fallbackDeleteResult.ackErrorCode}). WhatsApp rejected the delete request.`,
+                );
+                return;
+            }
+            if (newsletterChat && primaryDeleteResult?.ackErrorCode) {
+                await notifyLinkedDiscordChannel(
+                    targetJid,
+                    `Couldn't delete this newsletter message (ack ${primaryDeleteResult.ackErrorCode}). WhatsApp rejected the delete request.`,
+                );
+            }
         } catch (err) {
             state.logger?.error(err);
+            noteNewsletterMessageDebug({
+                discordMessageId,
+                jid: targetJid,
+                operation: 'Newsletter delete',
+                phase: 'send_error',
+                details: {
+                    error: normalizeBridgeMessageId(err?.output?.statusCode || err?.statusCode || err?.code || err?.message || 'send_error'),
+                },
+            });
         }
     });
 

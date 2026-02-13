@@ -7,6 +7,7 @@ import { resetClientFactoryOverrides, setClientFactoryOverrides } from '../src/c
 import {
   clearPendingNewsletterSends,
   noteNewsletterAckError,
+  noteNewsletterMessageDebug,
   notePendingNewsletterSend,
 } from '../src/newsletterBridge.js';
 import state from '../src/state.js';
@@ -469,6 +470,13 @@ test('/newslettermessagedebug shows mapping, pending send, and ack diagnostics',
       jid: '120363123456789012@newsletter',
       errorCode: '479',
     });
+    noteNewsletterMessageDebug({
+      discordMessageId: 'dc-news-debug-1',
+      jid: '120363123456789012@newsletter',
+      operation: 'Newsletter attachment send',
+      phase: 'ack_rejected',
+      details: { error: '479' },
+    });
 
     utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
     utils.discord.getControlChannel = async () => ({ send: async () => {} });
@@ -497,6 +505,7 @@ test('/newslettermessagedebug shows mapping, pending send, and ack diagnostics',
     assert.ok(content.includes('`3EB0DEBUGOUTBOUNDABC123456789`'));
     assert.ok(content.includes('Ack errors: `3EB0DEBUGOUTBOUNDABC123456789` -> 479'));
     assert.ok(content.includes('"pendingSend"'));
+    assert.ok(content.includes('"operationHistory"'));
   } finally {
     clearPendingNewsletterSends({ jid: '120363123456789012@newsletter' });
 
