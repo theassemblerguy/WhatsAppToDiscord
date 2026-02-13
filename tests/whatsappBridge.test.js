@@ -574,6 +574,41 @@ test('Newsletter edit/reaction/delete wait for server ids before sending actions
   }
 });
 
+test('Newsletter reactions wait past outbound client ids for resolved server ids', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    state.lastMessages['dc-news-react-outbound'] = '3EB0DD14CD06ABCE146147';
+    state.lastMessages['3EB0DD14CD06ABCE146147'] = 'dc-news-react-outbound';
+
+    setTimeout(() => {
+      state.lastMessages['server-react-outbound-1'] = 'dc-news-react-outbound';
+      state.lastMessages['dc-news-react-outbound'] = 'server-react-outbound-1';
+    }, 120);
+
+    harness.fakeClient.ev.emit('discordReaction', {
+      jid: '1203630@newsletter',
+      removed: false,
+      reaction: {
+        emoji: { name: '🔥' },
+        message: {
+          id: 'dc-news-react-outbound',
+          webhookId: null,
+          author: { username: 'You' },
+          channel: { send: async () => {} },
+        },
+      },
+    });
+
+    await delay(500);
+
+    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'server-react-outbound-1');
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.reaction, '🔥');
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('Discord newsletter sends use normalized JIDs and map server IDs', async () => {
   const harness = await setupWhatsAppHarness({
     oneWay: 0b11,

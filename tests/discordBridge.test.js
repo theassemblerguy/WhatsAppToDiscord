@@ -562,6 +562,91 @@ test('Discord messageDelete in newsletter channels waits for delayed server_id m
   }
 });
 
+test('Discord newsletter deletes ignore outbound client ids while waiting for server_id mapping', async () => {
+  const originalDiscordUtils = {
+    getGuild: utils.discord.getGuild,
+    getControlChannel: utils.discord.getControlChannel,
+    channelIdToJid: utils.discord.channelIdToJid,
+  };
+  const originalSettings = {
+    Token: state.settings.Token,
+    GuildID: state.settings.GuildID,
+  };
+  const originalDcClient = state.dcClient;
+  const originalWaClient = state.waClient;
+  const originalLastMessages = state.lastMessages;
+  const originalReactions = state.reactions;
+
+  try {
+    state.settings.Token = 'TEST_TOKEN';
+    state.settings.GuildID = 'guild';
+    state.lastMessages = {
+      'dc-news-outbound': '3EB0DD14CD06ABCE146147',
+      '3EB0DD14CD06ABCE146147': 'dc-news-outbound',
+    };
+    state.reactions = {};
+
+    utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
+    utils.discord.getControlChannel = async () => ({ send: async () => {} });
+    utils.discord.channelIdToJid = () => '120363123456789@newsletter';
+
+    const waEvents = [];
+    const waEv = new EventEmitter();
+    waEv.on('discordDelete', (payload) => waEvents.push(payload));
+    state.waClient = { ev: waEv };
+
+    class FakeDiscordClient extends EventEmitter {
+      constructor() {
+        super();
+        this.user = { id: 'bot-1' };
+      }
+
+      async login() {
+        queueMicrotask(() => this.emit('ready'));
+        return this;
+      }
+    }
+
+    const fakeClient = new FakeDiscordClient();
+    setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+    const discordHandler = await importDiscordHandler('newsletter-message-delete-ignore-outbound-id');
+    state.dcClient = await discordHandler.start();
+
+    setTimeout(() => {
+      state.lastMessages['server-delayed-outbound-1'] = 'dc-news-outbound';
+      state.lastMessages['dc-news-outbound'] = 'server-delayed-outbound-1';
+    }, 120);
+
+    fakeClient.emit('messageDelete', {
+      id: 'dc-news-outbound',
+      channelId: 'chan-1',
+      webhookId: null,
+      author: { id: 'user-1' },
+      channel: { send: async () => {} },
+    });
+    await delay(500);
+
+    assert.deepEqual(waEvents, [{
+      jid: '120363123456789@newsletter',
+      id: 'server-delayed-outbound-1',
+      discordMessageId: 'dc-news-outbound',
+    }]);
+  } finally {
+    utils.discord.getGuild = originalDiscordUtils.getGuild;
+    utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+    utils.discord.channelIdToJid = originalDiscordUtils.channelIdToJid;
+
+    state.settings.Token = originalSettings.Token;
+    state.settings.GuildID = originalSettings.GuildID;
+
+    state.dcClient = originalDcClient;
+    state.waClient = originalWaClient;
+    state.lastMessages = originalLastMessages;
+    state.reactions = originalReactions;
+    resetClientFactoryOverrides();
+  }
+});
+
 test('Discord pin system messages are not forwarded to WhatsApp', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,

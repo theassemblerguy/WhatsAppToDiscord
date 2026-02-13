@@ -14,9 +14,15 @@ const normalizeBridgeMessageId = (value) => {
   return String(value || '').trim();
 };
 
+const BAILEYS_OUTBOUND_MESSAGE_ID_REGEX = /^3E[A-F0-9]{20,}$/i;
+
 const isLikelyNewsletterServerId = (value) => {
   const normalized = normalizeBridgeMessageId(value);
-  return Boolean(normalized);
+  if (!normalized) return false;
+  if (BAILEYS_OUTBOUND_MESSAGE_ID_REGEX.test(normalized)) {
+    return false;
+  }
+  return true;
 };
 
 const getNewsletterServerIdFromMessage = (message) => {

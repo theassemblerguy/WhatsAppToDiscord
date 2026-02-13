@@ -7,8 +7,7 @@ import {
   WAMessageStubType,
 } from '@whiskeysockets/baileys';
 import { decryptPollVote } from '@whiskeysockets/baileys/lib/Utils/process-message.js';
-import { generateMessageIDV2, getKeyAuthor } from '@whiskeysockets/baileys/lib/Utils/generics.js';
-import { generateWAMessage } from '@whiskeysockets/baileys/lib/Utils/messages.js';
+import { getKeyAuthor } from '@whiskeysockets/baileys/lib/Utils/generics.js';
 
 import utils from './utils.js';
 import state from './state.js';
@@ -888,132 +887,6 @@ const getNewsletterMediaTypeFromMessage = (message) => {
     return '';
 };
 
-const getNewsletterMessageTypeFromMessage = (message) => {
-    if (!message || typeof message !== 'object') {
-        return 'text';
-    }
-    if (
-        message.pollCreationMessage
-        || message.pollCreationMessageV2
-        || message.pollCreationMessageV3
-        || message.pollCreationMessageV4
-    ) {
-        return 'poll';
-    }
-    if (message.eventMessage) {
-        return 'event';
-    }
-    if (getNewsletterMediaTypeFromMessage(message)) {
-        return 'media';
-    }
-    return 'text';
-};
-
-const patchSendMessageForNewsletterMessages = (client) => {
-    if (
-        !client
-        || client.__wa2dcNewsletterSendPatched
-        || typeof client.sendMessage !== 'function'
-        || typeof client.sendNode !== 'function'
-    ) {
-        return;
-    }
-
-    const baseSendMessage = client.sendMessage.bind(client);
-    client.sendMessage = async (jid, content, options) => {
-        const sendJid = normalizeSendJid(jid);
-        if (!isNewsletterJid(sendJid)) {
-            return baseSendMessage(jid, content, options);
-        }
-
-        const normalizedOptions = options ? { ...options } : {};
-        if (!normalizedOptions.logger) {
-            normalizedOptions.logger = state.logger;
-        }
-        if (normalizedOptions.getUrlInfo) {
-            delete normalizedOptions.getUrlInfo;
-        }
-
-        const isEventMsg = 'event' in (content || {}) && Boolean(content?.event);
-        const isDeleteMsg = 'delete' in (content || {}) && Boolean(content?.delete);
-        const isEditMsg = 'edit' in (content || {}) && Boolean(content?.edit);
-        const isPinMsg = 'pin' in (content || {}) && Boolean(content?.pin);
-        const isPollMessage = 'poll' in (content || {}) && Boolean(content?.poll);
-
-        const additionalAttributes = {};
-        const additionalNodes = [];
-        if (isDeleteMsg) {
-            const deleteRemoteJid = typeof content?.delete?.remoteJid === 'string' ? content.delete.remoteJid : '';
-            if (deleteRemoteJid.endsWith('@g.us') && !content?.delete?.fromMe) {
-                additionalAttributes.edit = '8';
-            } else {
-                additionalAttributes.edit = '7';
-            }
-        } else if (isEditMsg) {
-            additionalAttributes.edit = '1';
-        } else if (isPinMsg) {
-            additionalAttributes.edit = '2';
-        } else if (isPollMessage) {
-            additionalNodes.push({ tag: 'meta', attrs: { polltype: 'creation' } });
-        } else if (isEventMsg) {
-            additionalNodes.push({ tag: 'meta', attrs: { event_type: 'creation' } });
-        }
-
-        const messageId = normalizeBridgeMessageId(normalizedOptions.messageId) || generateMessageIDV2(client.user?.id);
-        const fullMsg = await generateWAMessage(sendJid, content, {
-            ...normalizedOptions,
-            messageId,
-            userJid: client.user?.id,
-            upload: typeof client.waUploadToServer === 'function' ? client.waUploadToServer : undefined,
-            getProfilePicUrl: typeof client.profilePictureUrl === 'function' ? client.profilePictureUrl.bind(client) : undefined,
-            getCallLink: typeof client.createCallLink === 'function' ? client.createCallLink.bind(client) : undefined,
-        });
-
-        const messageProto = fullMsg?.message;
-        const messageJson = messageProto && typeof messageProto.toJSON === 'function'
-            ? messageProto.toJSON()
-            : messageProto;
-        const messageType = getNewsletterMessageTypeFromMessage(messageJson);
-        const mediaType = messageType === 'media' ? getNewsletterMediaTypeFromMessage(messageJson) : '';
-
-        const plaintextContent = proto.Message.encode(messageProto).finish();
-        const plaintextAttrs = mediaType ? { mediatype: mediaType } : {};
-        const stanzaAttrs = {
-            to: sendJid,
-            id: fullMsg?.key?.id || messageId,
-            type: messageType,
-            ...additionalAttributes,
-            ...(mediaType ? { mediatype: mediaType } : {}),
-        };
-        const stanza = {
-            tag: 'message',
-            attrs: stanzaAttrs,
-            content: [
-                {
-                    tag: 'plaintext',
-                    attrs: plaintextAttrs,
-                    content: plaintextContent,
-                },
-                ...additionalNodes,
-            ],
-        };
-
-        normalizedOptions.logger?.debug?.({
-            jid: sendJid,
-            msgId: stanzaAttrs.id,
-            type: messageType,
-            mediatype: mediaType || null,
-            attrs: Object.keys(additionalAttributes).length ? additionalAttributes : null,
-            nodes: additionalNodes.length ? additionalNodes.map((node) => node?.tag).filter(Boolean) : null,
-        }, 'Sending patched newsletter message');
-
-        await client.sendNode(stanza);
-        return fullMsg;
-    };
-
-    client.__wa2dcNewsletterSendPatched = true;
-};
-
 const patchSendNodeForNewsletterMessages = (client) => {
     if (!client || client.__wa2dcNewsletterNodePatched || typeof client.sendNode !== 'function') {
         return;
@@ -1180,7 +1053,6 @@ const connectToWhatsApp = async (retry = 1) => {
     });
     client.contacts = state.contacts;
     patchSendMessageForLinkPreviews(client);
-    patchSendMessageForNewsletterMessages(client);
     patchSendNodeForNewsletterMessages(client);
     patchGroupMetadataForCache(client);
     const groupRefreshScheduler = createGroupRefreshScheduler({
