@@ -161,7 +161,11 @@ const NEWSLETTER_SERVER_ID_FETCH_WINDOW_SECONDS = 12 * 60;
 const NEWSLETTER_SERVER_ID_FETCH_FALLBACK_WINDOW_SECONDS = 3 * 60;
 const NEWSLETTER_SUBSCRIPTION_DEFAULT_TTL_MS = 15 * 60 * 1000;
 const NEWSLETTER_SUBSCRIPTION_RETRY_TTL_MS = 2 * 60 * 1000;
+const NEWSLETTER_MEDIA_STANZA_DEBUG_TTL_MS = 5 * 60 * 1000;
+const NEWSLETTER_MEDIA_STANZA_DEBUG_MAX = 256;
+const NEWSLETTER_MEDIA_STANZA_DEBUG_ENABLED = process.env.WA2DC_NEWSLETTER_MEDIA_DEBUG !== '0';
 const newsletterLiveUpdatesExpiresAt = new Map();
+const newsletterMediaStanzaDebug = new Map();
 const DISCORD_ATTACHMENT_MIME_BY_EXTENSION = {
     gif: 'image/gif',
     jpg: 'image/jpeg',
@@ -233,13 +237,57 @@ const toIntegerOrNull = (value) => {
     if (typeof value === 'number' && Number.isFinite(value)) {
         return Math.trunc(value);
     }
+    if (typeof value === 'bigint') {
+        return Number(value);
+    }
     if (typeof value === 'string' && value.trim()) {
         const parsed = Number.parseInt(value, 10);
         if (Number.isFinite(parsed)) {
             return parsed;
         }
     }
+    if (value && typeof value === 'object') {
+        if (typeof value.toNumber === 'function') {
+            try {
+                const parsed = value.toNumber();
+                if (Number.isFinite(parsed)) {
+                    return Math.trunc(parsed);
+                }
+            } catch {
+                return null;
+            }
+        }
+        if (typeof value.low === 'number' && Number.isFinite(value.low)) {
+            return Math.trunc(value.low);
+        }
+    }
     return null;
+};
+
+const getByteLength = (value) => {
+    if (!value) return 0;
+    if (Buffer.isBuffer(value)) return value.length;
+    if (value instanceof Uint8Array) return value.length;
+    if (typeof value === 'string') return value.length;
+    if (typeof value === 'object' && value?.type === 'Buffer' && Array.isArray(value?.data)) {
+        return value.data.length;
+    }
+    return 0;
+};
+
+const parseUrlHostForDebug = (value = '') => {
+    if (typeof value !== 'string' || !value) return null;
+    try {
+        return new URL(value).host || null;
+    } catch {
+        return null;
+    }
+};
+
+const truncateForDebug = (value = '', max = 80) => {
+    if (typeof value !== 'string' || !value) return null;
+    if (value.length <= max) return value;
+    return `${value.slice(0, max)}...`;
 };
 
 const toBufferIfPresent = (value) => {
@@ -1396,6 +1444,84 @@ const getNewsletterMediaTypeFromMessage = (message) => {
     return '';
 };
 
+const summarizeNewsletterMediaMessageForDebug = (message = {}) => {
+    const mediaType = getNewsletterMediaTypeFromMessage(message) || '';
+    if (!mediaType) {
+        return null;
+    }
+    const mediaMessage = message.imageMessage
+        || message.videoMessage
+        || message.audioMessage
+        || message.documentMessage
+        || null;
+    if (!mediaMessage || typeof mediaMessage !== 'object') {
+        return {
+            messageType: mediaType,
+            hasMediaMessageObject: false,
+        };
+    }
+    const url = typeof mediaMessage.url === 'string' ? mediaMessage.url : '';
+    const directPath = typeof mediaMessage.directPath === 'string'
+        ? mediaMessage.directPath
+        : (typeof mediaMessage.direct_path === 'string' ? mediaMessage.direct_path : '');
+    return {
+        messageType: mediaType,
+        mimetype: typeof mediaMessage.mimetype === 'string' ? mediaMessage.mimetype : null,
+        fileLength: toIntegerOrNull(mediaMessage.fileLength),
+        width: toIntegerOrNull(mediaMessage.width),
+        height: toIntegerOrNull(mediaMessage.height),
+        seconds: toIntegerOrNull(mediaMessage.seconds),
+        pageCount: toIntegerOrNull(mediaMessage.pageCount),
+        captionLength: typeof mediaMessage.caption === 'string' ? mediaMessage.caption.length : 0,
+        fileName: typeof mediaMessage.fileName === 'string' ? mediaMessage.fileName : null,
+        hasUrl: Boolean(url),
+        urlHost: parseUrlHostForDebug(url),
+        urlPreview: truncateForDebug(url, 120),
+        hasDirectPath: Boolean(directPath),
+        directPathPreview: truncateForDebug(directPath, 120),
+        fileSha256Bytes: getByteLength(mediaMessage.fileSha256),
+        fileEncSha256Bytes: getByteLength(mediaMessage.fileEncSha256),
+        mediaKeyBytes: getByteLength(mediaMessage.mediaKey),
+        jpegThumbnailBytes: getByteLength(mediaMessage.jpegThumbnail),
+        waveformBytes: getByteLength(mediaMessage.waveform),
+        ptt: Boolean(mediaMessage.ptt),
+        gifPlayback: Boolean(mediaMessage.gifPlayback),
+        mediaKeyTimestamp: toIntegerOrNull(mediaMessage.mediaKeyTimestamp),
+    };
+};
+
+const pruneNewsletterMediaStanzaDebug = () => {
+    const cutoff = Date.now() - NEWSLETTER_MEDIA_STANZA_DEBUG_TTL_MS;
+    for (const [outboundId, payload] of newsletterMediaStanzaDebug.entries()) {
+        if (!payload || typeof payload.timestamp !== 'number' || payload.timestamp < cutoff) {
+            newsletterMediaStanzaDebug.delete(outboundId);
+        }
+    }
+    while (newsletterMediaStanzaDebug.size > NEWSLETTER_MEDIA_STANZA_DEBUG_MAX) {
+        const oldestKey = newsletterMediaStanzaDebug.keys().next().value;
+        if (!oldestKey) break;
+        newsletterMediaStanzaDebug.delete(oldestKey);
+    }
+};
+
+const noteNewsletterMediaStanzaDebug = (outboundId, payload = {}) => {
+    const normalizedOutboundId = normalizeBridgeMessageId(outboundId);
+    if (!normalizedOutboundId) return;
+    pruneNewsletterMediaStanzaDebug();
+    newsletterMediaStanzaDebug.delete(normalizedOutboundId);
+    newsletterMediaStanzaDebug.set(normalizedOutboundId, {
+        ...payload,
+        timestamp: Date.now(),
+    });
+};
+
+const getNewsletterMediaStanzaDebug = (outboundId) => {
+    const normalizedOutboundId = normalizeBridgeMessageId(outboundId);
+    if (!normalizedOutboundId) return null;
+    pruneNewsletterMediaStanzaDebug();
+    return newsletterMediaStanzaDebug.get(normalizedOutboundId) || null;
+};
+
 const patchSendNodeForNewsletterMessages = (client) => {
     if (!client || client.__wa2dcNewsletterNodePatched || typeof client.sendNode !== 'function') {
         return;
@@ -1412,20 +1538,30 @@ const patchSendNodeForNewsletterMessages = (client) => {
                 return baseSendNode(frame);
             }
 
+            const outboundId = normalizeBridgeMessageId(frame?.attrs?.id);
             const needsMediaType = frame?.attrs?.type === 'media' && !frame?.attrs?.mediatype;
+            const shouldInspectMedia = NEWSLETTER_MEDIA_STANZA_DEBUG_ENABLED && frame?.attrs?.type === 'media';
             const contentNodes = Array.isArray(frame?.content) ? frame.content : [];
             const hasMeta = (predicate) => contentNodes.some((node) => predicate(node));
             const needsPollMeta = frame?.attrs?.type === 'poll'
                 && !hasMeta((node) => node?.tag === 'meta' && node?.attrs && typeof node.attrs.polltype === 'string');
             const needsEventMeta = frame?.attrs?.type === 'event'
                 && !hasMeta((node) => node?.tag === 'meta' && node?.attrs && typeof node.attrs.event_type === 'string');
-            if (!needsMediaType && !needsPollMeta && !needsEventMeta) {
+            if (!needsMediaType && !needsPollMeta && !needsEventMeta && !shouldInspectMedia) {
                 return baseSendNode(frame);
             }
 
             const plaintextNode = contentNodes.find((node) => node?.tag === 'plaintext');
             const rawPlaintext = plaintextNode?.content;
             if (!rawPlaintext) {
+                if (shouldInspectMedia) {
+                    state.logger?.warn?.({
+                        jid: to,
+                        outboundId,
+                        frameType: frame?.attrs?.type || null,
+                        frameMediaType: frame?.attrs?.mediatype || null,
+                    }, 'Newsletter media stanza is missing plaintext content');
+                }
                 return baseSendNode(frame);
             }
 
@@ -1440,18 +1576,46 @@ const patchSendNodeForNewsletterMessages = (client) => {
             }
             const decodedMessage = decoded && typeof decoded.toJSON === 'function' ? decoded.toJSON() : decoded;
             if (!decodedMessage) {
+                if (shouldInspectMedia) {
+                    state.logger?.warn?.({
+                        jid: to,
+                        outboundId,
+                        frameType: frame?.attrs?.type || null,
+                        frameMediaType: frame?.attrs?.mediatype || null,
+                    }, 'Failed to decode newsletter media plaintext payload');
+                }
                 return baseSendNode(frame);
             }
 
+            let patchedMediaType = null;
             if (needsMediaType) {
                 const mediatype = getNewsletterMediaTypeFromMessage(decodedMessage);
                 if (mediatype) {
                     frame.attrs.mediatype = mediatype;
+                    patchedMediaType = mediatype;
                     plaintextNode.attrs = {
                         ...(plaintextNode.attrs || {}),
                         mediatype,
                     };
                 }
+            }
+
+            if (shouldInspectMedia) {
+                const summary = summarizeNewsletterMediaMessageForDebug(decodedMessage);
+                const debugPayload = {
+                    jid: to,
+                    outboundId,
+                    frameType: frame?.attrs?.type || null,
+                    frameMediaType: frame?.attrs?.mediatype || null,
+                    patchedMediaType,
+                    plaintextMediaType: plaintextNode?.attrs?.mediatype || null,
+                    contentTags: contentNodes.map((node) => node?.tag).filter(Boolean),
+                    ...(summary || {}),
+                };
+                if (summary) {
+                    noteNewsletterMediaStanzaDebug(outboundId, debugPayload);
+                }
+                state.logger?.info?.(debugPayload, 'Prepared newsletter media stanza payload');
             }
 
             if (needsPollMeta) {
@@ -1893,6 +2057,7 @@ const connectToWhatsApp = async (retry = 1) => {
                     ? update.messageStubParameters
                     : [];
                 const errorCode = normalizeBridgeMessageId(errorCodeRaw) || 'unknown';
+                const mediaStanzaDebug = getNewsletterMediaStanzaDebug(key?.id);
                 noteNewsletterAckError({
                     messageId: key?.id,
                     jid: normalizedRemoteJid,
@@ -1902,6 +2067,7 @@ const connectToWhatsApp = async (retry = 1) => {
                     jid: normalizedRemoteJid,
                     id: key?.id,
                     error: errorCode,
+                    stanza: mediaStanzaDebug || undefined,
                 }, 'Newsletter send failed with ack error');
             }
             if (Array.isArray(update.pollUpdates) && update.pollUpdates.length) {
@@ -2128,10 +2294,12 @@ const connectToWhatsApp = async (retry = 1) => {
             jid: fromJid,
             errorCode,
         });
+        const mediaStanzaDebug = getNewsletterMediaStanzaDebug(messageId);
         state.logger?.warn?.({
             jid: fromJid,
             id: messageId,
             error: errorCode,
+            stanza: mediaStanzaDebug || undefined,
         }, 'Newsletter send failed with ack error');
     });
 
@@ -2339,6 +2507,8 @@ const connectToWhatsApp = async (retry = 1) => {
                 await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
             }
             const sentMessage = await sendWithNewsletterQuoteFallback(content, sendOptions);
+            const outboundId = normalizeBridgeMessageId(sentMessage?.key?.id);
+            const mediaStanzaDebug = newsletterChat ? getNewsletterMediaStanzaDebug(outboundId) : null;
             mapDiscordMessageToWhatsAppMessage({
                 discordMessageId: message.id,
                 sentMessage,
@@ -2353,13 +2523,24 @@ const connectToWhatsApp = async (retry = 1) => {
                 });
             }
             if (newsletterChat) {
+                if (mediaStanzaDebug) {
+                    noteNewsletterMessageDebug({
+                        discordMessageId: message.id,
+                        jid: targetJid,
+                        operation: ackContext,
+                        phase: 'stanza_prepared',
+                        details: {
+                            ...mediaStanzaDebug,
+                        },
+                    });
+                }
                 noteNewsletterMessageDebug({
                     discordMessageId: message.id,
                     jid: targetJid,
                     operation: ackContext,
                     phase: 'sent',
                     details: {
-                        outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
+                        outboundId,
                         serverId: normalizeBridgeMessageId(getNewsletterServerIdFromMessage(sentMessage)),
                     },
                 });
@@ -2367,6 +2548,7 @@ const connectToWhatsApp = async (retry = 1) => {
             storeMessage(sentMessage);
             const shouldTrackNewsletterAck = newsletterChat && (useNewsletterSpecialFlow || forceNewsletterAck);
             const notifyNewsletterAckFailure = async (ackErrorCode) => {
+                const ackStanzaDebug = getNewsletterMediaStanzaDebug(sentMessage?.key?.id);
                 clearFailedNewsletterMapping({
                     discordMessageId: message.id,
                     sentMessage,
@@ -2377,6 +2559,7 @@ const connectToWhatsApp = async (retry = 1) => {
                     outboundId: sentMessage?.key?.id,
                     serverId: getNewsletterServerIdFromMessage(sentMessage),
                     error: ackErrorCode,
+                    stanza: ackStanzaDebug || undefined,
                 }, `${ackContext} was rejected by WhatsApp ack`);
                 noteNewsletterMessageDebug({
                     discordMessageId: message.id,
@@ -2387,6 +2570,7 @@ const connectToWhatsApp = async (retry = 1) => {
                         outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
                         serverId: normalizeBridgeMessageId(getNewsletterServerIdFromMessage(sentMessage)),
                         error: normalizeBridgeMessageId(ackErrorCode),
+                        stanza: ackStanzaDebug || undefined,
                     },
                 });
                 if (notifyAckFailure) {
