@@ -23,7 +23,7 @@ test('fetchLatestVersion picks newest unstable prerelease even when API order is
   global.fetch = async () => new Response(JSON.stringify([
     makeRelease({ tag: 'v2.1.6-alpha.9', prerelease: true, publishedAt: '2026-02-13T04:40:11Z' }),
     makeRelease({ tag: 'v2.1.6-alpha.8', prerelease: true, publishedAt: '2026-02-13T04:30:39Z' }),
-    makeRelease({ tag: 'v2.1.6-beta.1', prerelease: true, publishedAt: '2026-02-13T05:07:23Z' }),
+    makeRelease({ tag: 'v2.1.6-beta.2', prerelease: true, publishedAt: '2026-02-13T05:07:23Z' }),
     makeRelease({ tag: 'v2.1.5', prerelease: false, publishedAt: '2026-02-06T10:05:27Z' }),
   ]), {
     status: 200,
@@ -32,7 +32,7 @@ test('fetchLatestVersion picks newest unstable prerelease even when API order is
 
   try {
     const result = await utils.updater.fetchLatestVersion('unstable');
-    assert.equal(result?.version, 'v2.1.6-beta.1');
+    assert.equal(result?.version, 'v2.1.6-beta.2');
     assert.equal(result?.channel, 'unstable');
   } finally {
     global.fetch = originalFetch;

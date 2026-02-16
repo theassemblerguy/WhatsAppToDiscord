@@ -1135,6 +1135,24 @@ const DISCORD_USER_MENTION_REGEX = /<@!?(\d+)>/g;
 const DISCORD_ROLE_MENTION_REGEX = /<@&(\d+)>/g;
 const DISCORD_REPLY_PREFIX_REGEX = /^(<@!?\d+>|@\S+)\s*/;
 const DISCORD_REPLY_FALLBACK_MAX_CHARS = 160;
+const DISCORD_MESSAGE_TYPE_REPLY = 19;
+
+const isDiscordReplyReference = (message = {}) => {
+    if (!message?.reference) return false;
+    const type = message?.type;
+    if (typeof type === 'undefined' || type === null) {
+        // Test doubles and some synthetic payloads may omit type.
+        return true;
+    }
+    if (typeof type === 'number') {
+        return type === DISCORD_MESSAGE_TYPE_REPLY;
+    }
+    if (typeof type === 'string') {
+        const normalizedType = type.trim().toUpperCase();
+        return normalizedType === 'REPLY' || normalizedType === String(DISCORD_MESSAGE_TYPE_REPLY);
+    }
+    return false;
+};
 
 const formatReplyFallbackText = (value = '') => String(value || '')
     .replace(/\s+/g, ' ')
@@ -2563,7 +2581,7 @@ const connectToWhatsApp = async (retry = 1) => {
         const newsletterChat = isNewsletterJid(targetJid);
         const useNewsletterSpecialFlow = useNewsletterSpecialFlowForJid(targetJid);
         const isForwardedFromDiscord = Boolean(forwardContext?.isForwarded);
-        const hasReplyReference = !isForwardedFromDiscord && Boolean(message.reference);
+        const hasReplyReference = !isForwardedFromDiscord && isDiscordReplyReference(message);
         const options = buildSendOptionsForJid(targetJid);
         const forwardSnapshot = isForwardedFromDiscord && message?.wa2dcForwardSnapshot
             ? message.wa2dcForwardSnapshot

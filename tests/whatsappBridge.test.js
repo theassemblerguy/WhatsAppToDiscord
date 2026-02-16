@@ -1326,6 +1326,46 @@ test('Discord replies warn with interpolated message storage size when quoted me
   }
 });
 
+test('Discord non-reply references skip quote lookup and do not warn', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    const channelWarnings = [];
+    let quoteAttempts = 0;
+    utils.whatsapp.createQuoteMessage = async () => {
+      quoteAttempts += 1;
+      return null;
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: 'jid@s.whatsapp.net',
+      message: {
+        id: 'dc-followed-announcement',
+        type: 'DEFAULT',
+        content: 'announcement update',
+        cleanContent: 'announcement update',
+        reference: { channelId: 'source-channel', messageId: 'source-message', guildId: 'source-guild' },
+        webhookId: 'external-news-webhook',
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async (value) => { channelWarnings.push(value); } },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(quoteAttempts, 0);
+    assert.equal(channelWarnings.length, 0);
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'announcement update');
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('Discord forwarded messages skip quote lookup and send plain forwarded text to WhatsApp', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
