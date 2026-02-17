@@ -8,16 +8,28 @@ body:
       value: |
         Thanks for the suggestion!
 
-        Before filing, please check the docs and existing issues to avoid duplicates:
+        Please keep it concrete and brief. Examples are helpful.
+        Before filing, check docs and existing issues to avoid duplicates:
         - Docs: https://arespawn.github.io/WhatsAppToDiscord/
         - Issues: https://github.com/arespawn/WhatsAppToDiscord/issues
+
+  - type: input
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: One sentence is enough.
+      placeholder: "I want to quickly identify bridge failures without reading full logs."
+    validations:
+      required: true
 
   - type: textarea
     id: problem
     attributes:
       label: Problem statement
-      description: What problem are you trying to solve? Who is affected and why?
-      placeholder: "It's hard to do X because..."
+      description: What is hard today, and why is it a problem?
+      placeholder: |
+        Today:
+        Why this hurts:
     validations:
       required: true
 
@@ -25,21 +37,25 @@ body:
     id: proposal
     attributes:
       label: Proposed solution
-      description: What should WA2DC do? Include behavior details or UX/UI expectations if relevant.
-      placeholder: "Add/change Y so that..."
+      description: What should WA2DC do instead?
+      placeholder: |
+        Add/change:
+        Trigger/command:
+        Result:
     validations:
       required: true
 
   - type: textarea
     id: use_cases
     attributes:
-      label: Use cases / examples
-      description: Concrete examples help a lot. What would you do step-by-step?
+      label: Example workflow (optional)
+      description: Step-by-step example of how you would use this.
       placeholder: |
-        - Scenario 1: ...
-        - Scenario 2: ...
+        1. ...
+        2. ...
+        3. ...
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: alternatives
@@ -67,6 +83,19 @@ body:
         - "Not sure"
     validations:
       required: true
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      description: Who would benefit most from this?
+      options:
+        - Most users
+        - Some users
+        - Niche case
+        - Not sure
+    validations:
+      required: false
 
   - type: textarea
     id: extra
