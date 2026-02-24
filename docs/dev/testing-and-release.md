@@ -12,7 +12,12 @@ Preferred checks before handoff:
 - `npm test`
 - `WA2DC_SMOKE_TEST=1 node src/index.js` for startup-sensitive changes
 
-CI executes `npm test` (including smoke boot coverage).
+CI executes the following on `ubuntu-latest`, `macos-latest`, and `windows-latest`:
+
+- `npm test`
+- `npm run bundle`
+- bundled smoke boot from `out.js` (`WA2DC_SMOKE_TEST=1`)
+- packaged binary build + smoke (`npm run build:bin:smoke`)
 
 ## Packaging model
 

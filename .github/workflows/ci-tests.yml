@@ -29,16 +29,31 @@ jobs:
         run: npm test
 
       - name: Bundle with esbuild (release smoke)
-        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        if: matrix.node == 24
         run: npm run bundle
 
-      - name: Run bundled watchdog smoke (out.js)
-        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+      - name: Run bundled watchdog smoke (out.js, Unix)
+        if: matrix.os != 'windows-latest' && matrix.node == 24
         run: |
           tmp="$(mktemp -d)"
           (cd "$tmp" && WA2DC_SMOKE_TEST=1 node "$GITHUB_WORKSPACE/out.js")
 
-      - name: Build and smoke-test Windows packaged binary
+      - name: Run bundled watchdog smoke (out.js, Windows)
         if: matrix.os == 'windows-latest' && matrix.node == 24
         shell: pwsh
+        run: |
+          $tmp = Join-Path $env:RUNNER_TEMP ("wa2dc-bundle-smoke-" + [guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $tmp | Out-Null
+          Push-Location $tmp
+          try {
+            $env:WA2DC_SMOKE_TEST = "1"
+            node "$env:GITHUB_WORKSPACE/out.js"
+          }
+          finally {
+            Pop-Location
+            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+          }
+
+      - name: Build and smoke-test packaged binary
+        if: matrix.node == 24
         run: npm run build:bin:smoke
