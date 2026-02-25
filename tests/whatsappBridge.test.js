@@ -1547,7 +1547,7 @@ test("Discord voice-style audio attachments are sent as WhatsApp ptt messages", 
 		assert.equal(sentContent.ptt, true);
 		assert.equal(sentContent.seconds, 4);
 		assert.ok(Buffer.isBuffer(sentContent.audio));
-		assert.notEqual(Buffer.isBuffer(sentContent.waveform), true);
+		assert.ok(Buffer.isBuffer(sentContent.waveform));
 		assert.ok(String(sentContent.mimetype || "").startsWith("audio/ogg"));
 	} finally {
 		harness.cleanup();
