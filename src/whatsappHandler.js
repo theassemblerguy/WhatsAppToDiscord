@@ -198,7 +198,6 @@ const NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES = 25 * 1024 * 1024;
 const NEWSLETTER_IMAGE_JPEG_MIME_TYPES = new Set(["image/jpeg", "image/jpg"]);
 const DISCORD_AUDIO_FETCH_MAX_BYTES = 25 * 1024 * 1024;
 const DISCORD_AUDIO_TRANSCODE_TIMEOUT_MS = 20 * 1000;
-const DISCORD_AUDIO_WAVEFORM_DECODE_TIMEOUT_MS = 15 * 1000;
 const DISCORD_VOICE_NAME_HINT_REGEX = /(voice|ptt|push-?to-?talk)/i;
 const newsletterLiveUpdatesExpiresAt = new Map();
 const newsletterMediaStanzaDebug = new Map();
@@ -700,8 +699,6 @@ const transcodeAudioBufferToOggOpus = async (inputBuffer) => {
 				"1",
 				"-c:a",
 				"libopus",
-				"-b:a",
-				"64k",
 				"-ar",
 				"48000",
 				"-avoid_negative_ts",
@@ -753,147 +750,17 @@ const transcodeAudioBufferToOggOpus = async (inputBuffer) => {
 	});
 };
 
-const decodeAudioBufferForWaveform = async (inputBuffer) => {
-	if (!inputBuffer?.length) return null;
-	return await new Promise((resolve, reject) => {
-		const ffmpeg = childProcess.spawn(
-			"ffmpeg",
-			[
-				"-hide_banner",
-				"-loglevel",
-				"error",
-				"-i",
-				"pipe:0",
-				"-vn",
-				"-ac",
-				"1",
-				"-ar",
-				"16000",
-				"-f",
-				"wav",
-				"pipe:1",
-			],
-			{ stdio: ["pipe", "pipe", "pipe"] },
-		);
-
-		const stdoutChunks = [];
-		const stderrChunks = [];
-		let completed = false;
-		const finish = (err, output = null) => {
-			if (completed) return;
-			completed = true;
-			clearTimeout(timeout);
-			if (err) {
-				reject(err);
-				return;
-			}
-			resolve(output);
-		};
-		const timeout = setTimeout(() => {
-			ffmpeg.kill("SIGKILL");
-			finish(new Error("ffmpeg_waveform_decode_timeout"));
-		}, DISCORD_AUDIO_WAVEFORM_DECODE_TIMEOUT_MS);
-
-		ffmpeg.stdout.on("data", (chunk) => stdoutChunks.push(chunk));
-		ffmpeg.stderr.on("data", (chunk) => stderrChunks.push(chunk));
-		ffmpeg.on("error", (err) => finish(err));
-		ffmpeg.on("close", (code) => {
-			if (code !== 0) {
-				const stderrText = Buffer.concat(stderrChunks).toString("utf8").trim();
-				finish(
-					new Error(
-						`ffmpeg_waveform_decode_exit_${code}${stderrText ? `:${stderrText}` : ""}`,
-					),
-				);
-				return;
-			}
-			const output = Buffer.concat(stdoutChunks);
-			if (!output.length) {
-				finish(new Error("ffmpeg_waveform_decode_empty_output"));
-				return;
-			}
-			finish(null, output);
-		});
-
-		ffmpeg.stdin.on("error", () => {});
-		ffmpeg.stdin.end(inputBuffer);
-	});
-};
-
-const isValidWhatsAppWaveformBuffer = (waveform) =>
-	Buffer.isBuffer(waveform) &&
-	waveform.length === 64 &&
-	waveform.every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 100);
-
-const generateAudioWaveformForWhatsApp = async ({
-	audio,
-	jid,
-	discordMessageId,
-	attachmentName,
-	candidate,
-} = {}) => {
+const generateAudioWaveformForWhatsApp = async (audio) => {
 	const audioBuffer = toBuffer(audio);
 	if (!audioBuffer?.length) return null;
 	try {
-		let waveformInput = audioBuffer;
-		let decodeMode = "direct";
-		try {
-			const decoded = await decodeAudioBufferForWaveform(audioBuffer);
-			if (decoded?.length) {
-				waveformInput = decoded;
-				decodeMode = "ffmpeg_wav";
-			}
-		} catch (err) {
-			state.logger?.debug?.(
-				{
-					err,
-					jid,
-					discordMessageId: normalizeBridgeMessageId(discordMessageId),
-					attachmentName: attachmentName || null,
-					candidate,
-				},
-				"Failed to decode audio to WAV for waveform generation; falling back to direct decode",
-			);
-		}
-
-		const waveform = await getAudioWaveform(waveformInput, state.logger);
+		const waveform = await getAudioWaveform(audioBuffer, state.logger);
 		const waveformBuffer = toBuffer(waveform);
-		if (!isValidWhatsAppWaveformBuffer(waveformBuffer)) {
-			state.logger?.debug?.(
-				{
-					jid,
-					discordMessageId: normalizeBridgeMessageId(discordMessageId),
-					attachmentName: attachmentName || null,
-					candidate,
-					decodeMode,
-					waveformBytes: waveformBuffer?.length || 0,
-				},
-				"Generated waveform is missing or invalid for WhatsApp voice message",
-			);
-			return null;
-		}
-		state.logger?.debug?.(
-			{
-				jid,
-				discordMessageId: normalizeBridgeMessageId(discordMessageId),
-				attachmentName: attachmentName || null,
-				candidate,
-				decodeMode,
-				audioBytes: audioBuffer.length,
-				waveformBytes: waveformBuffer.length,
-			},
-			"Generated WhatsApp-compatible waveform for Discord voice message",
-		);
+		if (!waveformBuffer?.length) return null;
 		return waveformBuffer;
 	} catch (err) {
 		state.logger?.debug?.(
-			{
-				err,
-				jid,
-				discordMessageId: normalizeBridgeMessageId(discordMessageId),
-				attachmentName: attachmentName || null,
-				candidate,
-			},
+			{ err },
 			"Failed to generate WhatsApp-compatible waveform for Discord voice message",
 		);
 		return null;
@@ -927,18 +794,8 @@ const normalizeAudioSendContentForWhatsApp = async ({
 			normalizedContent.seconds = Math.max(1, Math.round(duration));
 		}
 		const waveform = toBuffer(attachment?.waveform);
-		if (isValidWhatsAppWaveformBuffer(waveform)) {
+		if (waveform?.length) {
 			normalizedContent.waveform = waveform;
-		} else if (waveform?.length) {
-			state.logger?.debug?.(
-				{
-					jid,
-					discordMessageId: normalizeBridgeMessageId(discordMessageId),
-					attachmentName: attachment?.name || null,
-					waveformBytes: waveform.length,
-				},
-				"Skipping invalid Discord waveform payload; expected 64 bytes for WhatsApp",
-			);
 		}
 	}
 
@@ -993,20 +850,12 @@ const normalizeAudioSendContentForWhatsApp = async ({
 		}
 	}
 
-	const waveformCandidates = [
-		{ audio: normalizedContent.audio, label: "post_transcode" },
-	];
+	const waveformCandidates = [normalizedContent.audio];
 	if (sourceBuffer?.length && normalizedContent.audio !== sourceBuffer) {
-		waveformCandidates.push({ audio: sourceBuffer, label: "source" });
+		waveformCandidates.push(sourceBuffer);
 	}
 	for (const candidate of waveformCandidates) {
-		const generatedWaveform = await generateAudioWaveformForWhatsApp({
-			audio: candidate.audio,
-			jid,
-			discordMessageId,
-			attachmentName: attachment?.name,
-			candidate: candidate.label,
-		});
+		const generatedWaveform = await generateAudioWaveformForWhatsApp(candidate);
 		if (generatedWaveform?.length) {
 			normalizedContent.waveform = generatedWaveform;
 			break;
