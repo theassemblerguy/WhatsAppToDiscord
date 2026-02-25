@@ -32,7 +32,6 @@ Respect transport constraints when emitting output:
 - 2000-character message limit
 - use `utils.discord.partitionText(...)` for long responses
 - respect file-size gating (for example `DiscordFileSizeLimit`)
-- voice-note (`ptt`) sends from Discord should keep WhatsApp compatibility metadata intact (`audio/ogg; codecs=opus` when transcoded, `ptt: true`, and waveform bytes when available)
 
 ## Routing gates
 
