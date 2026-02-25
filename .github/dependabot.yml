@@ -7,6 +7,10 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "UTC"
+    reviewers:
+      - "arespawn"
+    assignees:
+      - "arespawn"
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
@@ -27,6 +31,10 @@ updates:
       day: "monday"
       time: "06:15"
       timezone: "UTC"
+    reviewers:
+      - "arespawn"
+    assignees:
+      - "arespawn"
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
