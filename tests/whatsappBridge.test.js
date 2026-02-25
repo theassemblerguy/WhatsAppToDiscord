@@ -31,6 +31,38 @@ const restoreSet = (target, snapshot) => {
 	});
 };
 
+const createMonoPcmWavBuffer = ({
+	sampleRate = 16_000,
+	durationSeconds = 1,
+	frequencyHz = 440,
+	amplitude = 0.4,
+} = {}) => {
+	const totalSamples = Math.max(1, Math.floor(sampleRate * durationSeconds));
+	const dataSize = totalSamples * 2;
+	const buffer = Buffer.alloc(44 + dataSize);
+	buffer.write("RIFF", 0, "ascii");
+	buffer.writeUInt32LE(36 + dataSize, 4);
+	buffer.write("WAVE", 8, "ascii");
+	buffer.write("fmt ", 12, "ascii");
+	buffer.writeUInt32LE(16, 16);
+	buffer.writeUInt16LE(1, 20);
+	buffer.writeUInt16LE(1, 22);
+	buffer.writeUInt32LE(sampleRate, 24);
+	buffer.writeUInt32LE(sampleRate * 2, 28);
+	buffer.writeUInt16LE(2, 32);
+	buffer.writeUInt16LE(16, 34);
+	buffer.write("data", 36, "ascii");
+	buffer.writeUInt32LE(dataSize, 40);
+
+	for (let idx = 0; idx < totalSamples; idx += 1) {
+		const sample =
+			Math.sin((2 * Math.PI * frequencyHz * idx) / sampleRate) * amplitude;
+		const normalized = Math.max(-1, Math.min(1, sample));
+		buffer.writeInt16LE(Math.round(normalized * 32767), 44 + idx * 2);
+	}
+	return buffer;
+};
+
 const setupWhatsAppHarness = async ({
 	oneWay = 0b11,
 	inWhitelist = () => true,
@@ -1517,6 +1549,64 @@ test("Discord voice-style audio attachments are sent as WhatsApp ptt messages", 
 		assert.ok(Buffer.isBuffer(sentContent.audio));
 		assert.ok(Buffer.isBuffer(sentContent.waveform));
 		assert.ok(String(sentContent.mimetype || "").startsWith("audio/ogg"));
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("Discord voice-style audio attachments generate WhatsApp waveform metadata", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			audio: { url: attachment.url },
+			mimetype: attachment.contentType,
+		});
+
+		const wavBytes = createMonoPcmWavBuffer({
+			sampleRate: 16_000,
+			durationSeconds: 1,
+			frequencyHz: 523,
+		});
+		const attachmentUrl = `data:audio/wav;base64,${wavBytes.toString("base64")}`;
+
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@s.whatsapp.net",
+			forwardContext: null,
+			message: {
+				id: "dc-voice-waveform-generated",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: attachmentUrl,
+							name: "voice-message.wav",
+							contentType: "audio/wav",
+							duration: 1,
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+
+		await delay(120);
+
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
+		assert.equal(sentContent.ptt, true);
+		assert.equal(sentContent.seconds, 1);
+		assert.ok(Buffer.isBuffer(sentContent.waveform));
+		assert.equal(sentContent.waveform.length, 64);
+		assert.ok(sentContent.waveform.every((entry) => entry >= 0 && entry <= 100));
 	} finally {
 		harness.cleanup();
 	}

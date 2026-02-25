@@ -8,6 +8,7 @@ import {
 	WAMessageStubType,
 } from "@whiskeysockets/baileys";
 import { getKeyAuthor } from "@whiskeysockets/baileys/lib/Utils/generics.js";
+import { getAudioWaveform } from "@whiskeysockets/baileys/lib/Utils/messages-media.js";
 import { decryptPollVote } from "@whiskeysockets/baileys/lib/Utils/process-message.js";
 import useSQLiteAuthState from "./auth/sqliteAuthState.js";
 import { createWhatsAppClient, getBaileysVersion } from "./clientFactories.js";
@@ -749,6 +750,23 @@ const transcodeAudioBufferToOggOpus = async (inputBuffer) => {
 	});
 };
 
+const generateAudioWaveformForWhatsApp = async (audio) => {
+	const audioBuffer = toBuffer(audio);
+	if (!audioBuffer?.length) return null;
+	try {
+		const waveform = await getAudioWaveform(audioBuffer, state.logger);
+		const waveformBuffer = toBuffer(waveform);
+		if (!waveformBuffer?.length) return null;
+		return waveformBuffer;
+	} catch (err) {
+		state.logger?.debug?.(
+			{ err },
+			"Failed to generate WhatsApp-compatible waveform for Discord voice message",
+		);
+		return null;
+	}
+};
+
 const normalizeAudioSendContentForWhatsApp = async ({
 	attachment,
 	content,
@@ -829,6 +847,18 @@ const normalizeAudioSendContentForWhatsApp = async ({
 				},
 				"Failed to transcode Discord voice message to WhatsApp-compatible opus",
 			);
+		}
+	}
+
+	const waveformCandidates = [normalizedContent.audio];
+	if (sourceBuffer?.length && normalizedContent.audio !== sourceBuffer) {
+		waveformCandidates.push(sourceBuffer);
+	}
+	for (const candidate of waveformCandidates) {
+		const generatedWaveform = await generateAudioWaveformForWhatsApp(candidate);
+		if (generatedWaveform?.length) {
+			normalizedContent.waveform = generatedWaveform;
+			break;
 		}
 	}
 
