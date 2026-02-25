@@ -11,7 +11,7 @@ import state from "./state.js";
 const isSmokeTest = process.env.WA2DC_SMOKE_TEST === "1";
 const STORAGE_DIR_MODE = 0o700;
 
-const { Intents } = discordJs;
+const { ChannelType, GatewayIntentBits } = discordJs;
 
 const sanitizeStorageKey = (name = "") => {
 	const raw = String(name)
@@ -414,18 +414,22 @@ const storage = {
 const setup = {
 	async setupDiscordChannels(token) {
 		return new Promise((resolve) => {
-			const client = createDiscordClient({ intents: [Intents.FLAGS.GUILDS] });
+			const client = createDiscordClient({
+				intents: [GatewayIntentBits.Guilds],
+			});
 			client.once("ready", () => {
 				state.logger?.info(
 					`Invite the bot using the following link: https://discord.com/oauth2/authorize?client_id=${client.user.id}&scope=bot%20applications.commands&permissions=536879120`,
 				);
 			});
 			client.once("guildCreate", async (guild) => {
-				const category = await guild.channels.create("whatsapp", {
-					type: "GUILD_CATEGORY",
+				const category = await guild.channels.create({
+					name: "whatsapp",
+					type: ChannelType.GuildCategory,
 				});
-				const controlChannel = await guild.channels.create("control-room", {
-					type: "GUILD_TEXT",
+				const controlChannel = await guild.channels.create({
+					name: "control-room",
+					type: ChannelType.GuildText,
 					parent: category,
 				});
 				client.destroy();

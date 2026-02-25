@@ -25,7 +25,16 @@ import state from "./state.js";
 import storage from "./storage.js";
 import utils from "./utils.js";
 
-const { Intents, Constants, MessageActionRow, MessageButton } = discordJs;
+const {
+	ActionRowBuilder,
+	ApplicationCommandOptionType,
+	ButtonBuilder,
+	ButtonStyle,
+	ChannelType,
+	GatewayIntentBits,
+	MessageFlags,
+	MessageType,
+} = discordJs;
 const { getDevice } = baileys;
 
 const DEFAULT_AVATAR_URL = "https://cdn.discordapp.com/embed/avatars/0.png";
@@ -34,14 +43,32 @@ const PIN_DURATION_PRESETS = {
 	"7d": 7 * 24 * 60 * 60,
 	"30d": 30 * 24 * 60 * 60,
 };
+const AnnouncementChannelTypes = [
+	ChannelType.GuildAnnouncement,
+	"GUILD_NEWS",
+];
+const TextBridgeChannelTypes = [
+	ChannelType.GuildText,
+	ChannelType.GuildAnnouncement,
+	"GUILD_TEXT",
+	"GUILD_NEWS",
+];
+const ApplicationCommandOptionTypes = {
+	STRING: ApplicationCommandOptionType.String,
+	INTEGER: ApplicationCommandOptionType.Integer,
+	NUMBER: ApplicationCommandOptionType.Number,
+	BOOLEAN: ApplicationCommandOptionType.Boolean,
+	CHANNEL: ApplicationCommandOptionType.Channel,
+	USER: ApplicationCommandOptionType.User,
+};
 
 const client = createDiscordClient({
 	intents: [
-		Intents.FLAGS.GUILDS,
-		Intents.FLAGS.GUILD_MESSAGES,
-		Intents.FLAGS.GUILD_MESSAGE_REACTIONS,
-		Intents.FLAGS.GUILD_MESSAGE_TYPING,
-		Intents.FLAGS.MESSAGE_CONTENT,
+		GatewayIntentBits.Guilds,
+		GatewayIntentBits.GuildMessages,
+		GatewayIntentBits.GuildMessageReactions,
+		GatewayIntentBits.GuildMessageTyping,
+		GatewayIntentBits.MessageContent,
 	],
 });
 let controlChannel;
@@ -427,12 +454,10 @@ const cacheDiscordMessageLocation = (message, fallbackChannelId = null) => {
 };
 
 const buildForwardContext = (message, rawContext = null) => {
-	const messageType =
-		typeof message.type === "number"
-			? Constants.MessageTypes?.[message.type]
-			: message.type;
+	const isReplyMessage =
+		message.type === MessageType.Reply || message.type === "REPLY";
 	const fallbackIsForwarded = Boolean(
-		message.reference && messageType !== "REPLY",
+		message.reference && !isReplyMessage,
 	);
 	const sourceChannelId =
 		rawContext?.sourceChannelId || message.reference?.channelId || null;
@@ -460,10 +485,10 @@ const getMessageFlagsBitfield = (message = {}) => {
 
 const isBroadcastWebhookMessage = (message = {}) => {
 	const flags = getMessageFlagsBitfield(message);
-	const crosspostedMask = Constants.MessageFlags?.CROSSPOSTED ?? 1;
-	const isCrosspostMask = Constants.MessageFlags?.IS_CROSSPOST ?? 2;
+	const crosspostedMask = MessageFlags.Crossposted ?? 1;
+	const isCrosspostMask = MessageFlags.IsCrosspost ?? 2;
 	return (
-		message?.channel?.type === "GUILD_NEWS" ||
+		AnnouncementChannelTypes.includes(message?.channel?.type) ||
 		(flags & crosspostedMask) !== 0 ||
 		(flags & isCrosspostMask) !== 0
 	);
@@ -931,7 +956,7 @@ const sendWhatsappMessage = async (
 
 			if (
 				i === 0 &&
-				lastDcMessage.channel.type === "GUILD_NEWS" &&
+				AnnouncementChannelTypes.includes(lastDcMessage.channel.type) &&
 				state.settings.Publish
 			) {
 				await lastDcMessage.crosspost();
@@ -1454,7 +1479,6 @@ client.on("whatsappPin", async ({ jid, key, pinned }) => {
 	}
 });
 
-const { ApplicationCommandOptionTypes } = Constants;
 const isNewsletterJid = (jid = "") =>
 	typeof jid === "string" && jid.endsWith("@newsletter");
 const NEWSLETTER_CREATE_QUERY_ID =
@@ -3426,7 +3450,7 @@ const commandHandlers = {
 				return;
 			}
 
-			if (!["GUILD_TEXT", "GUILD_NEWS"].includes(channel.type)) {
+			if (!TextBridgeChannelTypes.includes(channel.type)) {
 				await ctx.reply(
 					"Only text channels can be linked. Please choose a text channel.",
 				);
@@ -3466,7 +3490,7 @@ const commandHandlers = {
 					(hook) => hook.token && hook.owner?.id === client.user.id,
 				);
 				if (!webhook) {
-					webhook = await channel.createWebhook("WA2DC");
+					webhook = await channel.createWebhook({ name: "WA2DC" });
 				}
 			} catch (err) {
 				state.logger?.error(err);
@@ -3603,7 +3627,7 @@ const commandHandlers = {
 				return;
 			}
 
-			if (!["GUILD_TEXT", "GUILD_NEWS"].includes(target.type)) {
+			if (!TextBridgeChannelTypes.includes(target.type)) {
 				await ctx.reply(
 					"Only text or announcement channels can be targets. Please choose a different channel.",
 				);
@@ -3645,7 +3669,7 @@ const commandHandlers = {
 					(hook) => hook.token && hook.owner?.id === client.user.id,
 				);
 				if (!webhook) {
-					webhook = await target.createWebhook("WA2DC");
+					webhook = await target.createWebhook({ name: "WA2DC" });
 				}
 			} catch (err) {
 				state.logger?.error(err);
@@ -4930,16 +4954,16 @@ const commandHandlers = {
 				} else {
 					const message = utils.updater.formatUpdateMessage(state.updateInfo);
 					const components = [
-						new MessageActionRow().addComponents(
-							new MessageButton()
+						new ActionRowBuilder().addComponents(
+							new ButtonBuilder()
 								.setCustomId(UPDATE_BUTTON_IDS.APPLY)
 								.setLabel("Update")
-								.setStyle("PRIMARY")
+								.setStyle(ButtonStyle.Primary)
 								.setDisabled(!state.updateInfo.canSelfUpdate),
-							new MessageButton()
+							new ButtonBuilder()
 								.setCustomId(UPDATE_BUTTON_IDS.SKIP)
 								.setLabel("Skip update")
-								.setStyle("SECONDARY"),
+								.setStyle(ButtonStyle.Secondary),
 						),
 					];
 					await ctx.reply({ content: message, components });
@@ -5147,11 +5171,10 @@ client.on("messageCreate", async (message) => {
 		return;
 	}
 
-	const messageType =
-		typeof message.type === "number"
-			? Constants.MessageTypes?.[message.type]
-			: message.type;
-	if (messageType === "CHANNEL_PINNED_MESSAGE") {
+	if (
+		message.type === MessageType.ChannelPinnedMessage ||
+		message.type === "CHANNEL_PINNED_MESSAGE"
+	) {
 		return;
 	}
 

@@ -89,7 +89,9 @@ test("parseSettings recovers via firstRun on corrupted JSON (mocked Discord boot
 	const fakeGuild = {
 		id: "guild-1",
 		channels: {
-			async create(name) {
+			async create(payload) {
+				const name =
+					typeof payload === "string" ? payload : payload?.name || "";
 				const id = name === "whatsapp" ? "cat-1" : "ctrl-1";
 				createdChannels.push({ name, id });
 				return { id };

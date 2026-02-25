@@ -24,13 +24,14 @@ import state from "./state.js";
 import storage from "./storage.js";
 
 const {
-	Webhook,
-	MessageAttachment,
-	MessageActionRow,
-	MessageButton,
-	Constants: DiscordConstants,
+	ActionRowBuilder,
+	AttachmentBuilder,
+	ButtonBuilder,
+	ButtonStyle,
+	ChannelType,
+	StickerFormatType,
+	WebhookClient,
 } = discordJs;
-const { StickerFormatTypes } = DiscordConstants;
 
 const DOWNLOAD_TOKEN_VERSION = 1;
 const CUSTOM_EMOJI_REGEX = /<(a?):([a-zA-Z0-9_]{1,32}):(\d+)>/g;
@@ -2016,10 +2017,10 @@ const discord = {
 		if (!id) return null;
 		const format = sticker?.format;
 		let extension = "png";
-		const baseUrl = `https://media.discordapp.net/stickers/${id}`;
-		if (format === StickerFormatTypes.GIF) {
-			extension = "gif";
-		}
+			const baseUrl = `https://media.discordapp.net/stickers/${id}`;
+			if (format === StickerFormatType.GIF) {
+				extension = "gif";
+			}
 		const url = `${baseUrl}.${extension}${extension === "png" ? "?size=320" : ""}`;
 		return {
 			url,
@@ -2182,8 +2183,9 @@ const discord = {
 		for (;;) {
 			if (state.settings.Categories[nthCategory] == null) {
 				const categoryName = `whatsapp ${nthCategory + 1}`;
-				const category = await guild.channels.create(categoryName, {
-					type: "GUILD_CATEGORY",
+				const category = await guild.channels.create({
+					name: categoryName,
+					type: ChannelType.GuildCategory,
 				});
 				state.settings.Categories[nthCategory] = category.id;
 				continue;
@@ -2212,8 +2214,9 @@ const discord = {
 	async createChannel(name) {
 		const guild = await this.getGuild();
 		if (!guild) return null;
-		return guild.channels.create(name, {
-			type: "GUILD_TEXT",
+		return guild.channels.create({
+			name,
+			type: ChannelType.GuildText,
 			parent: await this.getCategory(
 				Object.keys(state.chats).length + this._unfinishedGoccCalls,
 			),
@@ -2232,7 +2235,10 @@ const discord = {
 		});
 		if (state.chats[normalizedJid]) {
 			const webhook = ensureWebhookReplySupport(
-				new Webhook(state.dcClient, state.chats[normalizedJid]),
+				new WebhookClient({
+					id: state.chats[normalizedJid].id,
+					token: state.chats[normalizedJid].token,
+				}),
 			);
 			resolve(webhook);
 			return webhook;
@@ -2247,7 +2253,7 @@ const discord = {
 			throw err;
 		});
 		const webhook = ensureWebhookReplySupport(
-			await channel.createWebhook("WA2DC"),
+			await channel.createWebhook({ name: "WA2DC" }),
 		);
 		state.chats[normalizedJid] = {
 			id: webhook.id,
@@ -2489,7 +2495,7 @@ const discord = {
 					}
 					const channel = await this.getChannel(chatInfo.channelId);
 					webhook = ensureWebhookReplySupport(
-						await channel.createWebhook("WA2DC"),
+						await channel.createWebhook({ name: "WA2DC" }),
 					);
 					state.chats[jid] = {
 						id: webhook.id,
@@ -2583,7 +2589,7 @@ const discord = {
 					state.chats[normalizedJid]?.channelId,
 				);
 				webhook = ensureWebhookReplySupport(
-					await channel.createWebhook("WA2DC"),
+					await channel.createWebhook({ name: "WA2DC" }),
 				);
 				if (normalizedJid) {
 					state.chats[normalizedJid] = {
@@ -2614,7 +2620,7 @@ const discord = {
 					state.chats[normalizedJid]?.channelId,
 				);
 				webhook = ensureWebhookReplySupport(
-					await channel.createWebhook("WA2DC"),
+					await channel.createWebhook({ name: "WA2DC" }),
 				);
 				if (normalizedJid) {
 					state.chats[normalizedJid] = {
@@ -2645,8 +2651,9 @@ const discord = {
 
 		if (!categoryExists) {
 			state.settings.Categories[0] = (
-				await guild.channels.create("whatsapp", {
-					type: "GUILD_CATEGORY",
+				await guild.channels.create({
+					name: "whatsapp",
+					type: ChannelType.GuildCategory,
 				})
 			).id;
 		}
@@ -2743,16 +2750,16 @@ const discord = {
 		}
 		const content = updater.formatUpdateMessage(updateInfo);
 		const components = [
-			new MessageActionRow().addComponents(
-				new MessageButton()
+			new ActionRowBuilder().addComponents(
+				new ButtonBuilder()
 					.setCustomId(UPDATE_BUTTON_IDS.APPLY)
 					.setLabel("Update")
-					.setStyle("PRIMARY")
+					.setStyle(ButtonStyle.Primary)
 					.setDisabled(!updateInfo.canSelfUpdate),
-				new MessageButton()
+				new ButtonBuilder()
 					.setCustomId(UPDATE_BUTTON_IDS.SKIP)
 					.setLabel("Skip update")
-					.setStyle("SECONDARY"),
+					.setStyle(ButtonStyle.Secondary),
 			),
 		];
 
@@ -2843,11 +2850,11 @@ const discord = {
 		const content =
 			"A backup of the previous version is available. Use the button below to roll back if you encounter issues.";
 		const components = [
-			new MessageActionRow().addComponents(
-				new MessageButton()
+			new ActionRowBuilder().addComponents(
+				new ButtonBuilder()
 					.setCustomId(ROLLBACK_BUTTON_ID)
 					.setLabel("Roll back")
-					.setStyle("DANGER"),
+					.setStyle(ButtonStyle.Danger),
 			),
 		];
 		let message = await this._fetchRollbackPromptMessage();
@@ -3553,7 +3560,9 @@ const whatsapp = {
 	async sendQR(qrString) {
 		await (await discord.getControlChannel()).send({
 			files: [
-				new MessageAttachment(await QRCode.toBuffer(qrString), "qrcode.png"),
+				new AttachmentBuilder(await QRCode.toBuffer(qrString), {
+					name: "qrcode.png",
+				}),
 			],
 		});
 	},

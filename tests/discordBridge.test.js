@@ -843,9 +843,7 @@ test("Discord pin system messages are not forwarded to WhatsApp", async () => {
 		const discordHandler = await importDiscordHandler("pin-system-message");
 		state.dcClient = await discordHandler.start();
 
-		const pinnedType = discordJs.Constants.MessageTypes.indexOf(
-			"CHANNEL_PINNED_MESSAGE",
-		);
+		const pinnedType = discordJs.MessageType.ChannelPinnedMessage;
 		fakeClient.emit("messageCreate", {
 			author: { id: "user-1" },
 			applicationId: null,
