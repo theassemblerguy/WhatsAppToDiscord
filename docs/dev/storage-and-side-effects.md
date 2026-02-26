@@ -36,6 +36,8 @@ If behavior around these files changes, document it here and in user-facing docs
 
 Never loosen these defaults.
 
+Docker note: the official image entrypoint may normalize ownership of mounted `storage/` to `node:node` before startup, then run the app as `node`. This is a container-start side effect and is intended to preserve write access after upgrades from older root-running images.
+
 ## Secret hygiene
 
 Never commit or expose:

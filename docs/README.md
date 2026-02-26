@@ -56,6 +56,7 @@ This repository currently pins the published npm package `@whiskeysockets/bailey
 - **Repeated "Connection was lost" logs** – WhatsApp occasionally drops the socket with timeout errors. The bot now keeps retrying with exponential backoff instead of deleting the session, so expect control-channel status messages while it reconnects. If the retries never succeed, rescan the QR code to refresh the session.
 - **Startup fails with encrypted DB/passphrase errors** – If you enabled `WA2DC_DB_PASSPHRASE`, keep using the same passphrase for that `storage/wa2dc.sqlite`. If you lose it, restore from backup and migrate again.
 - **Startup fails during migration** – Check file ownership/permissions under `storage/` and available disk space, then restart. Migration is transactional and won’t partially apply broken auth key writes.
+- **Docker logs show `unable to open database file`** – The mounted `./storage` directory is not writable by the runtime user. The official image now auto-fixes ownership on startup when running as root. If you run with a custom non-root user, fix host ownership first (for example `sudo chown -R 1000:1000 ./WA2DC`).
 
 ## Running
 
@@ -70,6 +71,7 @@ docker compose up -d
 ```
 
 The compose file mounts the `storage` directory so data is kept between container restarts. It uses the `latest` tag (stable channel) by default; switch to `unstable` if you explicitly want prerelease builds.
+At container start, the image repairs ownership of the mounted `storage/` directory, then runs WA2DC as the unprivileged `node` user.
 
 To update a running container, pull the new image and recreate the service:
 

@@ -20,3 +20,29 @@ test("Discord attachment/embed image URLs dedupe via proxy normalization", () =>
 	]);
 	assert.equal(deduped.length, 1);
 });
+
+test("Discord mergeCollectedAttachments dedupes across attachment groups", () => {
+	const base = [
+		{
+			url: "https://cdn.discordapp.com/attachments/1/2/file.png?ex=a",
+			name: "file.png",
+			contentType: "image/png",
+		},
+	];
+	const extra = [
+		{
+			url: "https://images-ext-1.discordapp.net/external/token/https/cdn.discordapp.com/attachments/1/2/file.png?format=webp",
+			name: "file.webp",
+			contentType: "image/webp",
+		},
+		{
+			url: "https://cdn.discordapp.com/attachments/1/2/other.png?ex=b",
+			name: "other.png",
+			contentType: "image/png",
+		},
+	];
+	const merged = utils.discord.mergeCollectedAttachments(base, extra);
+	assert.equal(merged.length, 2);
+	assert.equal(merged[0].name, "file.png");
+	assert.equal(merged[1].name, "other.png");
+});

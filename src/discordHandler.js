@@ -82,6 +82,7 @@ const bridgePinnedMessages = new Set();
 const pinExpiryTimers = new Map();
 const DISCORD_FORWARD_CONTEXT_TTL_MS = 5 * 60 * 1000;
 const DISCORD_MESSAGE_LOCATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DISCORD_MESSAGE_LOCATION_MISS_TTL_MS = 10 * 1000;
 const NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS = 8000;
 const NEWSLETTER_SERVER_ID_WAIT_POLL_MS = 150;
 const NEWSLETTER_ACK_WAIT_WITH_SERVER_ID_MS = 2500;
@@ -94,6 +95,10 @@ const discordForwardContextCache = new Map();
 const discordForwardContextTimers = new Map();
 const discordMessageLocationCache = new Map();
 const discordMessageLocationTimers = new Map();
+const discordMessageLocationMissCache = new Map();
+const discordMessageLocationMissTimers = new Map();
+const quotedWhatsAppMessageLocationCache = new Map();
+const quotedWhatsAppMessageLocationTimers = new Map();
 let restartInProgress = false;
 const allowsWhatsAppToDiscord = () =>
 	oneWayAllowsWhatsAppToDiscord(state.settings.oneWay);
@@ -444,11 +449,75 @@ const cacheDiscordMessageLocation = (message, fallbackChannelId = null) => {
 			? message.url
 			: buildDiscordMessageUrl({ guildId, channelId, messageId });
 	if (!channelId && !url) return;
+	clearTimedCacheEntry(
+		discordMessageLocationMissCache,
+		discordMessageLocationMissTimers,
+		messageId,
+	);
 	setTimedCacheEntry(
 		discordMessageLocationCache,
 		discordMessageLocationTimers,
 		messageId,
 		{ channelId: channelId || null, url: url || null },
+		DISCORD_MESSAGE_LOCATION_TTL_MS,
+	);
+};
+
+const getCachedQuotedWhatsAppMessageLocation = (
+	whatsAppMessageId,
+	discordMessageId = null,
+) => {
+	const normalizedWaId = normalizeBridgeMessageId(whatsAppMessageId);
+	if (!normalizedWaId) return null;
+	const cached = quotedWhatsAppMessageLocationCache.get(normalizedWaId);
+	if (!cached) return null;
+	const normalizedCachedDiscordId = normalizeBridgeMessageId(cached.discordId);
+	const normalizedDiscordId = normalizeBridgeMessageId(discordMessageId);
+	if (
+		normalizedDiscordId &&
+		normalizedCachedDiscordId &&
+		normalizedDiscordId !== normalizedCachedDiscordId
+	) {
+		return null;
+	}
+	return cached;
+};
+
+const cacheQuotedWhatsAppMessageLocation = ({
+	whatsAppMessageId,
+	discordMessageId = null,
+	location = null,
+	fallbackChannelId = null,
+} = {}) => {
+	const normalizedWaId = normalizeBridgeMessageId(whatsAppMessageId);
+	if (!normalizedWaId) return;
+
+	const normalizedDiscordId = normalizeBridgeMessageId(discordMessageId);
+	const cachedLocationByDiscordId = normalizedDiscordId
+		? discordMessageLocationCache.get(normalizedDiscordId)
+		: null;
+	const resolvedLocation = location || cachedLocationByDiscordId || null;
+	const channelId = resolvedLocation?.channelId || fallbackChannelId || null;
+	const url =
+		resolvedLocation?.url ||
+		(normalizedDiscordId && channelId
+			? buildDiscordMessageUrl({
+					guildId: state.settings.GuildID || null,
+					channelId,
+					messageId: normalizedDiscordId,
+				})
+			: null);
+	if (!channelId && !url && !normalizedDiscordId) return;
+
+	setTimedCacheEntry(
+		quotedWhatsAppMessageLocationCache,
+		quotedWhatsAppMessageLocationTimers,
+		normalizedWaId,
+		{
+			discordId: normalizedDiscordId || null,
+			channelId: channelId || null,
+			url: url || null,
+		},
 		DISCORD_MESSAGE_LOCATION_TTL_MS,
 	);
 };
@@ -552,18 +621,24 @@ const resolveForwardSourceChannelId = async (sourceJid) => {
 };
 
 const resolveForwardSourceFromQuote = async (message) => {
-	const quotedWaId =
-		typeof message?.quote?.id === "string" ? message.quote.id.trim() : null;
+	const quotedWaId = normalizeBridgeMessageId(message?.quote?.id);
 	const quotedSourceJid =
 		message?.quote?.sourceJid || message?.quote?.remoteJid || null;
 	const sourceChannelId = await resolveForwardSourceChannelId(quotedSourceJid);
 	if (!quotedWaId && !quotedSourceJid) return null;
 
-	const mappedDiscordIdRaw = quotedWaId
-		? state.lastMessages?.[quotedWaId]
+	const mappedDiscordIdRaw = quotedWaId ? state.lastMessages?.[quotedWaId] : null;
+	const mappedDiscordId = normalizeBridgeMessageId(mappedDiscordIdRaw);
+	const cachedByQuotedWaId = quotedWaId
+		? getCachedQuotedWhatsAppMessageLocation(quotedWaId, mappedDiscordId)
 		: null;
-	const mappedDiscordId =
-		mappedDiscordIdRaw == null ? "" : String(mappedDiscordIdRaw).trim();
+	if (cachedByQuotedWaId?.channelId || cachedByQuotedWaId?.url) {
+		return {
+			channelId:
+				cachedByQuotedWaId.channelId || sourceChannelId || null,
+			url: cachedByQuotedWaId.url || null,
+		};
+	}
 	if (!mappedDiscordId) {
 		if (sourceChannelId) return { channelId: sourceChannelId, url: null };
 		return null;
@@ -571,19 +646,60 @@ const resolveForwardSourceFromQuote = async (message) => {
 
 	const cached = discordMessageLocationCache.get(mappedDiscordId);
 	if (cached) {
+		cacheQuotedWhatsAppMessageLocation({
+			whatsAppMessageId: quotedWaId,
+			discordMessageId: mappedDiscordId,
+			location: cached,
+			fallbackChannelId: sourceChannelId,
+		});
 		return {
 			channelId: cached.channelId || sourceChannelId || null,
 			url: cached.url || null,
 		};
 	}
 
-	const channelIds = [
-		...new Set(
-			Object.values(state.chats || {})
-				.map((chat) => chat?.channelId)
-				.filter(Boolean),
-		),
-	];
+	if (discordMessageLocationMissCache.has(mappedDiscordId)) {
+		if (sourceChannelId) {
+			const sourceChannel = await utils.discord.getChannel(sourceChannelId);
+			const sourceFound = await sourceChannel?.messages
+				?.fetch?.(mappedDiscordId)
+				.catch(() => null);
+			if (sourceFound) {
+				cacheDiscordMessageLocation(sourceFound, sourceChannelId);
+				const resolved = discordMessageLocationCache.get(mappedDiscordId);
+				if (resolved) {
+					cacheQuotedWhatsAppMessageLocation({
+						whatsAppMessageId: quotedWaId,
+						discordMessageId: mappedDiscordId,
+						location: resolved,
+						fallbackChannelId: sourceChannelId,
+					});
+					return {
+						channelId: resolved.channelId || sourceChannelId,
+						url: resolved.url || null,
+					};
+				}
+			}
+		}
+		if (sourceChannelId) return { channelId: sourceChannelId, url: null };
+		return null;
+	}
+
+	const channelIds = [];
+	const seenChannelIds = new Set();
+	const pushChannelId = (channelId) => {
+		if (!channelId || seenChannelIds.has(channelId)) return;
+		seenChannelIds.add(channelId);
+		channelIds.push(channelId);
+	};
+	pushChannelId(sourceChannelId);
+	pushChannelId(cachedByQuotedWaId?.channelId || null);
+	for (const channelId of Object.values(state.chats || {})
+		.map((chat) => chat?.channelId)
+		.filter(Boolean)) {
+		pushChannelId(channelId);
+	}
+
 	for (const channelId of channelIds) {
 		const channel = await utils.discord.getChannel(channelId);
 		if (!channel?.messages?.fetch) continue;
@@ -595,12 +711,18 @@ const resolveForwardSourceFromQuote = async (message) => {
 		cacheDiscordMessageLocation(found, channelId);
 		const resolved = discordMessageLocationCache.get(mappedDiscordId);
 		if (resolved) {
+			cacheQuotedWhatsAppMessageLocation({
+				whatsAppMessageId: quotedWaId,
+				discordMessageId: mappedDiscordId,
+				location: resolved,
+				fallbackChannelId: sourceChannelId || channelId,
+			});
 			return {
 				channelId: resolved.channelId || sourceChannelId || channelId,
 				url: resolved.url || null,
 			};
 		}
-		return {
+		const fallbackLocation = {
 			channelId,
 			url: buildDiscordMessageUrl({
 				guildId: found.guildId || state.settings.GuildID || null,
@@ -608,8 +730,25 @@ const resolveForwardSourceFromQuote = async (message) => {
 				messageId: mappedDiscordId,
 			}),
 		};
+		cacheQuotedWhatsAppMessageLocation({
+			whatsAppMessageId: quotedWaId,
+			discordMessageId: mappedDiscordId,
+			location: fallbackLocation,
+			fallbackChannelId: sourceChannelId || channelId,
+		});
+		return {
+			channelId: fallbackLocation.channelId,
+			url: fallbackLocation.url,
+		};
 	}
 
+	setTimedCacheEntry(
+		discordMessageLocationMissCache,
+		discordMessageLocationMissTimers,
+		mappedDiscordId,
+		true,
+		DISCORD_MESSAGE_LOCATION_MISS_TTL_MS,
+	);
 	if (sourceChannelId) return { channelId: sourceChannelId, url: null };
 
 	return null;
@@ -974,10 +1113,15 @@ const sendWhatsappMessage = async (
 				await lastDcMessage.crosspost();
 			}
 
-			const waIdsForChunk = idChunks[i] || [];
-			for (const waId of waIdsForChunk) {
-				state.lastMessages[waId] = lastDiscordMessageId;
-			}
+				const waIdsForChunk = idChunks[i] || [];
+				for (const waId of waIdsForChunk) {
+					state.lastMessages[waId] = lastDiscordMessageId;
+					cacheQuotedWhatsAppMessageLocation({
+						whatsAppMessageId: waId,
+						discordMessageId: lastDiscordMessageId,
+						fallbackChannelId: webhook.channelId,
+					});
+				}
 			if (i === 0) {
 				const primaryWaId =
 					waIdsForChunk[0] ||
@@ -1425,8 +1569,23 @@ client.on("whatsappDelete", async ({ id, jid }) => {
 	delete state.lastMessages[id];
 	delete state.lastMessages[messageId];
 	clearTimedCacheEntry(
+		quotedWhatsAppMessageLocationCache,
+		quotedWhatsAppMessageLocationTimers,
+		id,
+	);
+	clearTimedCacheEntry(
+		quotedWhatsAppMessageLocationCache,
+		quotedWhatsAppMessageLocationTimers,
+		messageId,
+	);
+	clearTimedCacheEntry(
 		discordMessageLocationCache,
 		discordMessageLocationTimers,
+		messageId,
+	);
+	clearTimedCacheEntry(
+		discordMessageLocationMissCache,
+		discordMessageLocationMissTimers,
 		messageId,
 	);
 });
@@ -5348,6 +5507,16 @@ client.on("messageDelete", async (message) => {
 		message?.id,
 	);
 	clearTimedCacheEntry(
+		discordMessageLocationMissCache,
+		discordMessageLocationMissTimers,
+		message?.id,
+	);
+	clearTimedCacheEntry(
+		quotedWhatsAppMessageLocationCache,
+		quotedWhatsAppMessageLocationTimers,
+		message?.id,
+	);
+	clearTimedCacheEntry(
 		discordForwardContextCache,
 		discordForwardContextTimers,
 		message?.id,
@@ -5368,23 +5537,28 @@ client.on("messageDelete", async (message) => {
 		...new Set(waIds.map((id) => normalizeBridgeMessageId(id)).filter(Boolean)),
 	];
 	const newsletterChat = isNewsletterJid(jid);
-	if (newsletterChat) {
-		if (
-			message.webhookId == null &&
-			!(message.author?.bot && !state.settings.redirectBots) &&
-			message.author?.id !== client.user.id
-		) {
-			await message.channel.send(
-				"Newsletter message deletion isn't supported by Baileys yet. Please delete the message directly in WhatsApp on your phone.",
-			);
+		if (newsletterChat) {
+			if (
+				message.webhookId == null &&
+				!(message.author?.bot && !state.settings.redirectBots) &&
+				message.author?.id !== client.user.id
+			) {
+				await message.channel.send(
+					"Newsletter message deletion isn't supported by Baileys yet. Please delete the message directly in WhatsApp on your phone.",
+				);
+			}
+			for (const waId of normalizedWaIds) {
+				delete state.lastMessages[waId];
+				clearTimedCacheEntry(
+					quotedWhatsAppMessageLocationCache,
+					quotedWhatsAppMessageLocationTimers,
+					waId,
+				);
+			}
+			delete state.lastMessages[message.id];
+			clearPinExpiryNotice(message.id);
+			return;
 		}
-		for (const waId of normalizedWaIds) {
-			delete state.lastMessages[waId];
-		}
-		delete state.lastMessages[message.id];
-		clearPinExpiryNotice(message.id);
-		return;
-	}
 	const newsletterServerId = newsletterChat
 		? resolveNewsletterServerIdForDiscordMessage(
 				message.id,
@@ -5454,6 +5628,11 @@ client.on("messageDelete", async (message) => {
 	}
 	for (const waId of [...new Set([...normalizedWaIds, ...waIdsToDelete])]) {
 		delete state.lastMessages[waId];
+		clearTimedCacheEntry(
+			quotedWhatsAppMessageLocationCache,
+			quotedWhatsAppMessageLocationTimers,
+			waId,
+		);
 	}
 	delete state.lastMessages[message.id];
 	clearPinExpiryNotice(message.id);

@@ -1,7 +1,7 @@
 # Testing And Release
 
 > Owner: WA2DC maintainers
-> Last reviewed: 2026-02-24
+> Last reviewed: 2026-02-26
 > Scope: Validation commands, CI expectations, and packaging constraints.
 
 ## Validation matrix

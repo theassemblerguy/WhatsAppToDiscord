@@ -769,33 +769,52 @@ const normalizeAttachmentUrlForDedupe = (value = "") => {
 	}
 };
 
-const dedupeAttachments = (attachments = []) => {
-	const seen = new Set();
-	return attachments.filter((attachment, index) => {
-		const urlKey = normalizeAttachmentUrlForDedupe(attachment?.url);
-		const idKey = attachment?.id ? String(attachment.id) : "";
-		const nameKey =
-			typeof attachment?.name === "string"
-				? attachment.name.trim().toLowerCase()
-				: "";
-		const contentTypeKey =
-			typeof attachment?.contentType === "string"
-				? attachment.contentType.trim().toLowerCase()
-				: "";
-		const key = urlKey
-			? `url:${urlKey}`
-			: idKey
-				? `id:${idKey}`
-				: nameKey
-					? `name:${nameKey}|type:${contentTypeKey}`
-					: `idx:${index}`;
-		if (seen.has(key)) {
-			return false;
-		}
-		seen.add(key);
-		return true;
-	});
+const getAttachmentDedupeKey = (attachment, fallbackIndex = 0) => {
+	const urlKey = normalizeAttachmentUrlForDedupe(attachment?.url);
+	const idKey = attachment?.id ? String(attachment.id) : "";
+	const nameKey =
+		typeof attachment?.name === "string"
+			? attachment.name.trim().toLowerCase()
+			: "";
+	const contentTypeKey =
+		typeof attachment?.contentType === "string"
+			? attachment.contentType.trim().toLowerCase()
+			: "";
+	return urlKey
+		? `url:${urlKey}`
+		: idKey
+			? `id:${idKey}`
+			: nameKey
+				? `name:${nameKey}|type:${contentTypeKey}`
+				: `idx:${fallbackIndex}`;
 };
+
+const createAttachmentAccumulator = (initialAttachments = []) => {
+	const seen = new Set();
+	const attachments = [];
+	const push = (attachment) => {
+		const key = getAttachmentDedupeKey(attachment, attachments.length);
+		if (seen.has(key)) return false;
+		seen.add(key);
+		attachments.push(attachment);
+		return true;
+	};
+	const append = (attachmentList = []) => {
+		if (!Array.isArray(attachmentList)) return;
+		for (const attachment of attachmentList) {
+			push(attachment);
+		}
+	};
+	append(initialAttachments);
+	return {
+		append,
+		push,
+		toArray: () => [...attachments],
+	};
+};
+
+const dedupeAttachments = (attachments = []) =>
+	createAttachmentAccumulator(attachments).toArray();
 
 const stripUrlDelimiters = (value = "") => value.replace(/^<+|>+$/g, "");
 const stripTrailingPunctuation = (value = "") =>
@@ -1983,6 +2002,13 @@ const discord = {
 	dedupeCollectedAttachments(attachments = []) {
 		return dedupeAttachments(attachments);
 	},
+	mergeCollectedAttachments(...attachmentLists) {
+		const accumulator = createAttachmentAccumulator();
+		for (const list of attachmentLists) {
+			accumulator.append(list);
+		}
+		return accumulator.toArray();
+	},
 	extractCustomEmojiData(message) {
 		const content = message?.content ?? "";
 		if (!content) {
@@ -2132,13 +2158,13 @@ const discord = {
 		const consumedUrls = gifEmbeds
 			.map((entry) => entry.sourceUrl)
 			.filter(Boolean);
-		const combined = dedupeAttachments([
-			...baseAttachments,
-			...stickerAttachments,
-			...gifEmbeds.map((entry) => entry.attachment),
-			...embedAttachments,
-			...emojiAttachments,
-		]);
+		const combined = this.mergeCollectedAttachments(
+			baseAttachments,
+			stickerAttachments,
+			gifEmbeds.map((entry) => entry.attachment),
+			embedAttachments,
+			emojiAttachments,
+		);
 		return { attachments: combined, consumedUrls };
 	},
 	convertWhatsappFormatting(text = "") {
