@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { StickerFormatType } from "discord.js";
 
 import utils from "../src/utils.js";
 
@@ -155,4 +156,28 @@ test("WhatsApp document content preserves gifPlayback for collected GIF videos",
 	});
 	assert.equal(content.mimetype, "video/mp4");
 	assert.equal(content.gifPlayback, true);
+});
+
+test("Discord sticker attachments prefer the provided sticker asset URL", () => {
+	const collected = utils.discord.collectStickerAttachments({
+		stickers: new Map([
+			[
+				"sticker-1",
+				{
+					id: "796140687639838730",
+					name: "animated-sticker",
+					format: StickerFormatType.GIF,
+					url: "https://cdn.discordapp.com/stickers/796140687639838730.gif",
+				},
+			],
+		]),
+	});
+
+	assert.equal(collected.length, 1);
+	assert.equal(
+		collected[0]?.url,
+		"https://cdn.discordapp.com/stickers/796140687639838730.gif",
+	);
+	assert.equal(collected[0]?.name, "animated-sticker-796140687639838730.gif");
+	assert.equal(collected[0]?.contentType, "image/gif");
 });

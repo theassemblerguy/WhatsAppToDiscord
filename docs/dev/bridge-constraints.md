@@ -33,8 +33,11 @@ Respect transport constraints when emitting output:
 - use `utils.discord.partitionText(...)` for long responses
 - respect file-size gating (for example `DiscordFileSizeLimit`)
 - preserve Discord -> WhatsApp attachment delivery for unsupported static image formats by normalizing them to WhatsApp-safe image payloads when possible, and fall back to document delivery instead of dropping the message when normalization fails
+- precompute outbound `jpegThumbnail` data for Discord -> WhatsApp image sends when possible so packaged Baileys builds do not need to discover image tooling at send time
+- when a Discord message contains multiple album-eligible image/video attachments for a normal WhatsApp chat, prefer relaying them as a WhatsApp media album instead of separate standalone sends; keep mixed/unsupported attachment sets on the sequential fallback path
 - do not flatten or duplicate animated Discord media just to satisfy static image normalization paths; when Discord exposes both a GIF file entry and its preview video for the same upload, prefer a single animated send candidate
 - when Discord GIF providers (for example Tenor/Giphy) expose extensionless video URLs plus static preview thumbnails, infer the animated video send from the provider embed and suppress the duplicate preview image
+- prefer the sticker asset URL exposed by Discord over reconstructing sticker CDN/proxy URLs locally; animated sticker formats may require different extensions than the static fallback path
 
 ## Routing gates
 

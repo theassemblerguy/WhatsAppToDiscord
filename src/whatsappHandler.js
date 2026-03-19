@@ -1,12 +1,17 @@
 import {
 	DisconnectReason,
+	generateWAMessageFromContent,
 	getAggregateVotesInPollMessage,
+	prepareWAMessageMedia,
 	proto,
 	updateMessageWithPollUpdate,
 	WAMessageStatus,
 	WAMessageStubType,
 } from "@whiskeysockets/baileys";
-import { getKeyAuthor } from "@whiskeysockets/baileys/lib/Utils/generics.js";
+import {
+	generateMessageIDV2,
+	getKeyAuthor,
+} from "@whiskeysockets/baileys/lib/Utils/generics.js";
 import { decryptPollVote } from "@whiskeysockets/baileys/lib/Utils/process-message.js";
 import useSQLiteAuthState from "./auth/sqliteAuthState.js";
 import { createWhatsAppClient, getBaileysVersion } from "./clientFactories.js";
@@ -201,6 +206,9 @@ const NEWSLETTER_MEDIA_STANZA_DEBUG_ENABLED =
 	process.env.WA2DC_NEWSLETTER_MEDIA_DEBUG !== "0";
 const NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES = 25 * 1024 * 1024;
 const NEWSLETTER_IMAGE_JPEG_MIME_TYPES = new Set(["image/jpeg", "image/jpg"]);
+const WHATSAPP_MEDIA_ALBUM_MAX_ITEMS = 10;
+const WHATSAPP_OUTBOUND_JPEG_THUMB_WIDTH = 192;
+const WHATSAPP_OUTBOUND_JPEG_THUMB_QUALITY = 50;
 const WHATSAPP_SAFE_IMAGE_MIME_TYPES = new Set([
 	"image/jpeg",
 	"image/jpg",
@@ -818,6 +826,298 @@ const readImageDimensionsWithJimp = async ({ sourceBuffer } = {}) => {
 		width: toIntegerOrNull(image?.bitmap?.width),
 		height: toIntegerOrNull(image?.bitmap?.height),
 	};
+};
+
+const buildJpegThumbnailWithSharp = async ({ sourceBuffer } = {}) => {
+	const sharp = await getImageSharp();
+	if (!sharp) {
+		return null;
+	}
+	const image = sharp(sourceBuffer, { animated: true });
+	const metadata = await image.metadata();
+	return {
+		decoder: "sharp",
+		jpegThumbnail: await image
+			.resize({
+				width: WHATSAPP_OUTBOUND_JPEG_THUMB_WIDTH,
+				fit: "inside",
+				withoutEnlargement: true,
+			})
+			.jpeg({ quality: WHATSAPP_OUTBOUND_JPEG_THUMB_QUALITY })
+			.toBuffer(),
+		width: toIntegerOrNull(metadata?.width),
+		height: toIntegerOrNull(metadata?.height),
+	};
+};
+
+const buildJpegThumbnailWithJimp = async ({ sourceBuffer } = {}) => {
+	const jimp = await getImageJimp();
+	if (!jimp) {
+		return null;
+	}
+	const image = await jimp.Jimp.read(sourceBuffer);
+	return {
+		decoder: "jimp",
+		jpegThumbnail: await image
+			.resize({
+				w: WHATSAPP_OUTBOUND_JPEG_THUMB_WIDTH,
+				mode: jimp.ResizeStrategy.BILINEAR,
+			})
+			.getBuffer("image/jpeg", {
+				quality: WHATSAPP_OUTBOUND_JPEG_THUMB_QUALITY,
+			}),
+		width: toIntegerOrNull(image?.bitmap?.width),
+		height: toIntegerOrNull(image?.bitmap?.height),
+	};
+};
+
+const ensureImageThumbForWhatsAppSend = async ({
+	content,
+	jid,
+	discordMessageId,
+} = {}) => {
+	if (isNewsletterJid(jid) || !content?.image || content?.jpegThumbnail) {
+		return content;
+	}
+	const normalizedSourceMime = normalizeMimeType(content?.mimetype);
+	if (normalizedSourceMime && !normalizedSourceMime.startsWith("image/")) {
+		return content;
+	}
+	try {
+		const sourceBuffer = await loadImageBufferForNormalization(content?.image);
+		if (!sourceBuffer?.length) {
+			return content;
+		}
+		for (const buildThumbnail of [
+			buildJpegThumbnailWithSharp,
+			buildJpegThumbnailWithJimp,
+		]) {
+			try {
+				const thumbnailResult = await buildThumbnail({ sourceBuffer });
+				if (!thumbnailResult?.jpegThumbnail?.length) {
+					continue;
+				}
+				return {
+					...content,
+					jpegThumbnail: thumbnailResult.jpegThumbnail,
+					width: content.width || thumbnailResult.width || undefined,
+					height: content.height || thumbnailResult.height || undefined,
+				};
+			} catch (err) {
+				state.logger?.debug?.(
+					{
+						err,
+						jid,
+						discordMessageId: normalizeBridgeMessageId(discordMessageId),
+						sourceMime: normalizedSourceMime || null,
+					},
+					"Failed to generate outbound WhatsApp image thumbnail",
+				);
+			}
+		}
+	} catch (err) {
+		state.logger?.debug?.(
+			{
+				err,
+				jid,
+				discordMessageId: normalizeBridgeMessageId(discordMessageId),
+				sourceMime: normalizedSourceMime || null,
+			},
+			"Failed to load outbound Discord image while preparing WhatsApp thumbnail",
+		);
+	}
+	return content;
+};
+
+const getAlbumEligibleMediaKind = (content = {}) => {
+	if (content?.image && !content?.document && !content?.audio) {
+		return "image";
+	}
+	if (content?.video && !content?.document && !content?.audio) {
+		return "video";
+	}
+	return "";
+};
+
+const buildAttachmentCaptionText = ({
+	text,
+	hasOnlyCustomEmoji,
+	isForwardedFromDiscord,
+	useNewsletterSpecialFlow,
+	hasReplyReference,
+	options,
+	ensureNewsletterReplyFallbackContext,
+	prependReplyFallbackContext,
+} = {}) => {
+	let captionText = hasOnlyCustomEmoji ? "" : text;
+	if (isForwardedFromDiscord) {
+		captionText = captionText ? `Forwarded\n${captionText}` : "Forwarded";
+	}
+	if (useNewsletterSpecialFlow && hasReplyReference && !options?.quoted) {
+		return ensureNewsletterReplyFallbackContext().then((replyContext) =>
+			prependReplyFallbackContext(captionText, replyContext),
+		);
+	}
+	return Promise.resolve(captionText);
+};
+
+const buildAlbumRelayOptions = ({ client, jid, messageId } = {}) => {
+	if (
+		!client ||
+		typeof client.relayMessage !== "function" ||
+		typeof client.waUploadToServer !== "function"
+	) {
+		return null;
+	}
+	const userJid =
+		client.user?.id ||
+		authState?.creds?.me?.id ||
+		state.waClient?.user?.id ||
+		null;
+	if (!userJid) {
+		return null;
+	}
+	return {
+		jid,
+		userJid,
+		messageId,
+		logger: state.logger,
+		upload: client.waUploadToServer,
+		options: undefined,
+	};
+};
+
+const sendMediaAlbumToWhatsApp = async ({
+	client,
+	jid,
+	discordMessageId,
+	contents,
+	captionText = "",
+	mentionJids = [],
+	quoted = null,
+} = {}) => {
+	const relayBaseOptions = buildAlbumRelayOptions({
+		client,
+		jid,
+		messageId: discordMessageId,
+	});
+	if (!relayBaseOptions || !Array.isArray(contents) || contents.length < 2) {
+		return null;
+	}
+
+	let startedRelay = false;
+	let sentChildren = 0;
+	try {
+		const preparedMedia = [];
+		for (const content of contents) {
+			const mediaKind = getAlbumEligibleMediaKind(content);
+			if (!mediaKind) {
+				return null;
+			}
+			const prepared = await prepareWAMessageMedia(content, relayBaseOptions);
+			const messageType =
+				mediaKind === "image" ? "imageMessage" : "videoMessage";
+			const payload = prepared?.[messageType];
+			if (!payload) {
+				return null;
+			}
+			preparedMedia.push({ messageType, payload: { ...payload } });
+		}
+
+		const parentMessage = generateWAMessageFromContent(
+			jid,
+			proto.Message.fromObject({
+				albumMessage: {
+					expectedImageCount: preparedMedia.filter(
+						(entry) => entry.messageType === "imageMessage",
+					).length,
+					expectedVideoCount: preparedMedia.filter(
+						(entry) => entry.messageType === "videoMessage",
+					).length,
+				},
+			}),
+			{
+				userJid: relayBaseOptions.userJid,
+				messageId: generateMessageIDV2(relayBaseOptions.userJid),
+			},
+		);
+
+		await client.relayMessage(jid, parentMessage.message, {
+			messageId: parentMessage.key.id,
+		});
+		startedRelay = true;
+		mapDiscordMessageToWhatsAppMessage({
+			discordMessageId,
+			sentMessage: parentMessage,
+			isNewsletter: false,
+		});
+		storeMessage(parentMessage);
+
+		for (const [index, entry] of preparedMedia.entries()) {
+			const payload = {
+				...entry.payload,
+				contextInfo: { ...(entry.payload.contextInfo || {}) },
+			};
+			if (index === 0) {
+				if (captionText) {
+					payload.caption = captionText;
+				}
+				if (mentionJids.length) {
+					payload.contextInfo.mentionedJid = mentionJids;
+				}
+			}
+			const childMessage = generateWAMessageFromContent(
+				jid,
+				proto.Message.fromObject({
+					[entry.messageType]: payload,
+					messageContextInfo: {
+						messageAssociation: {
+							associationType:
+								proto.MessageAssociation.AssociationType.MEDIA_ALBUM,
+							parentMessageKey: parentMessage.key,
+							messageIndex: index,
+						},
+					},
+				}),
+				{
+					userJid: relayBaseOptions.userJid,
+					messageId: generateMessageIDV2(relayBaseOptions.userJid),
+					quoted: index === 0 ? quoted : undefined,
+				},
+			);
+			await client.relayMessage(jid, childMessage.message, {
+				messageId: childMessage.key.id,
+			});
+			storeMessage(childMessage);
+			const childId = normalizeBridgeMessageId(childMessage?.key?.id);
+			if (childId) {
+				state.lastMessages[childId] = discordMessageId;
+				state.sentMessages.add(childId);
+			}
+			sentChildren += 1;
+		}
+
+		return {
+			parentMessage,
+			sentChildren,
+			startedRelay: true,
+		};
+	} catch (err) {
+		return {
+			error: err,
+			sentChildren,
+			startedRelay,
+		};
+	}
+};
+
+const chunkList = (list = [], size = 1) => {
+	const chunkSize = Number.isInteger(size) && size > 0 ? size : 1;
+	const chunks = [];
+	for (let index = 0; index < list.length; index += chunkSize) {
+		chunks.push(list.slice(index, index + chunkSize));
+	}
+	return chunks;
 };
 
 const normalizeNewsletterImageSendContent = async ({
@@ -3903,9 +4203,7 @@ const connectToWhatsApp = async (retry = 1) => {
 		};
 
 		if (state.settings.UploadAttachments && attachmentsToSend.length > 0) {
-			let first = true;
-			let sentAnyAttachment = false;
-			let attemptedAttachmentSends = 0;
+			const preparedAttachments = [];
 			for (const file of attachmentsToSend) {
 				const preparedFile = normalizeAttachmentForWhatsAppSend(file);
 				let doc = utils.whatsapp.createDocumentContent(preparedFile);
@@ -3922,6 +4220,11 @@ const connectToWhatsApp = async (retry = 1) => {
 					jid: targetJid,
 					discordMessageId: message?.id,
 				});
+				doc = await ensureImageThumbForWhatsAppSend({
+					content: doc,
+					jid: targetJid,
+					discordMessageId: message?.id,
+				});
 				if (newsletterChat) {
 					doc = await normalizeNewsletterImageSendContent({
 						content: doc,
@@ -3929,26 +4232,95 @@ const connectToWhatsApp = async (retry = 1) => {
 						discordMessageId: message?.id,
 					});
 				}
-				attemptedAttachmentSends += 1;
-				if (first) {
-					let captionText = hasOnlyCustomEmoji ? "" : text;
-					if (isForwardedFromDiscord) {
-						captionText = captionText
-							? `Forwarded\n${captionText}`
-							: "Forwarded";
-					}
-					if (
-						useNewsletterSpecialFlow &&
-						hasReplyReference &&
-						!options.quoted
-					) {
-						const replyContext = await ensureNewsletterReplyFallbackContext();
-						captionText = prependReplyFallbackContext(
-							captionText,
-							replyContext,
+				preparedAttachments.push({
+					attachment: preparedFile,
+					content: doc,
+				});
+			}
+
+			const attachmentCaptionText = await buildAttachmentCaptionText({
+				text,
+				hasOnlyCustomEmoji,
+				isForwardedFromDiscord,
+				useNewsletterSpecialFlow,
+				hasReplyReference,
+				options,
+				ensureNewsletterReplyFallbackContext,
+				prependReplyFallbackContext,
+			});
+
+			const albumEligibleAttachments = preparedAttachments.filter(({ content }) =>
+				Boolean(getAlbumEligibleMediaKind(content)),
+			);
+			const canUseMediaAlbum =
+				!newsletterChat &&
+				!isBroadcastJid(targetJid) &&
+				preparedAttachments.length >= 2 &&
+				albumEligibleAttachments.length === preparedAttachments.length;
+			if (canUseMediaAlbum) {
+				let sentAnyAlbum = false;
+				for (const [batchIndex, batch] of chunkList(
+					preparedAttachments,
+					WHATSAPP_MEDIA_ALBUM_MAX_ITEMS,
+				).entries()) {
+					const albumResult = await sendMediaAlbumToWhatsApp({
+						client,
+						jid: targetJid,
+						discordMessageId: message.id,
+						contents: batch.map((entry) => entry.content),
+						captionText: batchIndex === 0 ? attachmentCaptionText : "",
+						mentionJids: batchIndex === 0 ? mentionJids : [],
+						quoted: batchIndex === 0 ? options?.quoted : undefined,
+					});
+					if (albumResult?.error) {
+						state.logger?.error?.(
+							{
+								err: albumResult.error,
+								jid: targetJid,
+								discordMessageId: message?.id,
+								attachments: batch.length,
+							},
+							albumResult.startedRelay
+								? "Failed while relaying WhatsApp media album"
+								: "Failed to prepare WhatsApp media album; falling back to sequential attachment sends",
 						);
 					}
-					if (captionText || mentionJids.length) doc.caption = captionText;
+					if (albumResult?.startedRelay) {
+						sentAnyAlbum = true;
+						if (albumResult.sentChildren === 0) {
+							state.logger?.warn?.(
+								{
+									jid: targetJid,
+									discordMessageId: message?.id,
+								},
+								"WhatsApp media album relay started but no children were confirmed sent; skipping sequential fallback to avoid duplicates",
+							);
+						}
+						continue;
+					}
+					if (!albumResult?.sentChildren) {
+						if (sentAnyAlbum) {
+							return;
+						}
+						sentAnyAlbum = false;
+						break;
+					}
+					sentAnyAlbum = true;
+				}
+				if (sentAnyAlbum) {
+					return;
+				}
+			}
+
+			let first = true;
+			let sentAnyAttachment = false;
+			let attemptedAttachmentSends = 0;
+			for (const { attachment: preparedFile, content: doc } of preparedAttachments) {
+				attemptedAttachmentSends += 1;
+				if (first) {
+					if (attachmentCaptionText || mentionJids.length) {
+						doc.caption = attachmentCaptionText;
+					}
 					if (!newsletterChat && mentionJids.length) doc.mentions = mentionJids;
 				}
 				try {

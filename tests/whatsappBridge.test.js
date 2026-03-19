@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { WAMessageStatus } from "@whiskeysockets/baileys";
+import { proto, WAMessageStatus } from "@whiskeysockets/baileys";
 
 import {
 	resetClientFactoryOverrides,
@@ -154,10 +154,12 @@ const setupWhatsAppHarness = async ({
 			constructor() {
 				this.ev = new EventEmitter();
 				this.sendCalls = [];
+				this.relayCalls = [];
 				this.newsletterReactionCalls = [];
 				this._sendCounter = 0;
 				this.contacts = {};
 				this.signalRepository = {};
+				this.user = { id: "15550001111@s.whatsapp.net" };
 				this.ws = new EventEmitter();
 			}
 
@@ -173,6 +175,11 @@ const setupWhatsAppHarness = async ({
 
 			async newsletterReactMessage(jid, serverId, reaction) {
 				this.newsletterReactionCalls.push({ jid, serverId, reaction });
+			}
+
+			async relayMessage(jid, message, options = {}) {
+				this.relayCalls.push({ jid, message, options });
+				return options.messageId || `relay-${this.relayCalls.length}`;
 			}
 
 			async groupFetchAllParticipating() {
@@ -1664,6 +1671,186 @@ test("Unsupported Discord static WebP attachments are normalized before WhatsApp
 		assert.equal(sentContent.document, undefined);
 		assert.equal(sentContent.width, 2);
 		assert.equal(sentContent.height, 2);
+		assert.ok(Buffer.isBuffer(sentContent.jpegThumbnail));
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("Standard Discord PNG image attachments include a jpegThumbnail before WhatsApp send", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const sharpMod = await import("sharp");
+		const sharp = sharpMod?.default || sharpMod;
+		const pngBytes = await sharp({
+			create: {
+				width: 4,
+				height: 3,
+				channels: 4,
+				background: { r: 12, g: 34, b: 56, alpha: 1 },
+			},
+		})
+			.png()
+			.toBuffer();
+		const attachmentUrl = `data:image/png;base64,${pngBytes.toString("base64")}`;
+
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			image: { url: attachment.url },
+			mimetype: attachment.contentType,
+		});
+
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@s.whatsapp.net",
+			forwardContext: null,
+			message: {
+				id: "dc-static-png-thumb",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: attachmentUrl,
+							name: "paste.png",
+							contentType: "image/png",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+
+		const sent = await waitFor(
+			() => harness.fakeClient.sendCalls.length === 1,
+			{
+				timeoutMs: 1500,
+			},
+		);
+
+		assert.equal(sent, true);
+		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
+		assert.ok(Buffer.isBuffer(sentContent.jpegThumbnail));
+		assert.equal(sentContent.width, 4);
+		assert.equal(sentContent.height, 3);
+		assert.equal(sentContent.document, undefined);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("Multiple Discord image attachments are sent to WhatsApp as a media album", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const sharpMod = await import("sharp");
+		const sharp = sharpMod?.default || sharpMod;
+		harness.fakeClient.waUploadToServer = async (_filePath, uploadOptions = {}) => {
+			const mediaType = uploadOptions.mediaType || "image";
+			return {
+				mediaUrl: `https://mmg.whatsapp.net/${mediaType}/${Date.now()}`,
+				directPath: `/m1/${mediaType}/${Date.now()}`,
+			};
+		};
+
+		const firstPng = await sharp({
+			create: {
+				width: 3,
+				height: 3,
+				channels: 4,
+				background: { r: 200, g: 10, b: 20, alpha: 1 },
+			},
+		})
+			.png()
+			.toBuffer();
+		const secondPng = await sharp({
+			create: {
+				width: 4,
+				height: 2,
+				channels: 4,
+				background: { r: 10, g: 80, b: 200, alpha: 1 },
+			},
+		})
+			.png()
+			.toBuffer();
+
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			image: { url: attachment.url },
+			mimetype: attachment.contentType,
+		});
+
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@s.whatsapp.net",
+			forwardContext: null,
+			message: {
+				id: "dc-media-album",
+				content: "album caption",
+				cleanContent: "album caption",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: `data:image/png;base64,${firstPng.toString("base64")}`,
+							name: "one.png",
+							contentType: "image/png",
+						},
+					],
+					[
+						"attachment-2",
+						{
+							id: "attachment-2",
+							url: `data:image/png;base64,${secondPng.toString("base64")}`,
+							name: "two.png",
+							contentType: "image/png",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+
+		const settled = await waitFor(
+			() => harness.fakeClient.relayCalls.length === 3,
+			{ timeoutMs: 2500 },
+		);
+
+		assert.equal(settled, true);
+		assert.equal(harness.fakeClient.sendCalls.length, 0);
+		assert.equal(harness.fakeClient.relayCalls.length, 3);
+		const parent = harness.fakeClient.relayCalls[0];
+		const firstChild = harness.fakeClient.relayCalls[1];
+		const secondChild = harness.fakeClient.relayCalls[2];
+		assert.ok(parent?.message?.albumMessage);
+		assert.equal(parent?.message?.albumMessage?.expectedImageCount, 2);
+		assert.equal(parent?.message?.albumMessage?.expectedVideoCount, 0);
+		assert.equal(
+			firstChild?.message?.messageContextInfo?.messageAssociation
+				?.associationType,
+			proto.MessageAssociation.AssociationType.MEDIA_ALBUM,
+		);
+		assert.equal(
+			firstChild?.message?.messageContextInfo?.messageAssociation
+				?.parentMessageKey?.id,
+			parent?.options?.messageId,
+		);
+		assert.equal(firstChild?.message?.imageMessage?.caption, "album caption");
+		assert.equal(secondChild?.message?.imageMessage?.caption ?? null, null);
+		assert.equal(
+			state.lastMessages["dc-media-album"],
+			parent?.options?.messageId,
+		);
 	} finally {
 		harness.cleanup();
 	}

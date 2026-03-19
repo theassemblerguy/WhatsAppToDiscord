@@ -2544,12 +2544,18 @@ const discord = {
 		const id = sticker?.id;
 		if (!id) return null;
 		const format = sticker?.format;
-		let extension = "png";
-		const baseUrl = `https://media.discordapp.net/stickers/${id}`;
-		if (format === StickerFormatType.GIF) {
-			extension = "gif";
+		const explicitUrl =
+			typeof sticker?.url === "string" ? sticker.url.trim() : "";
+		let extension = guessExtensionFromUrl(explicitUrl) || "png";
+		if (!explicitUrl) {
+			if (format === StickerFormatType.GIF) {
+				extension = "gif";
+			} else if (format === StickerFormatType.Lottie) {
+				extension = "json";
+			}
 		}
-		const url = `${baseUrl}.${extension}${extension === "png" ? "?size=320" : ""}`;
+		const url =
+			explicitUrl || `https://cdn.discordapp.com/stickers/${id}.${extension}`;
 		return {
 			url,
 			name: `${sanitizeFileName(sticker?.name || "sticker", "sticker")}-${id}.${extension}`,
