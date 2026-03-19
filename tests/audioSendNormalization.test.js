@@ -4,7 +4,8 @@ import test from "node:test";
 import { createAudioSendContentNormalizer } from "../src/internal/audioSendNormalization.js";
 
 test("audio normalizer leaves non-audio content unchanged", async () => {
-	const normalizeAudioSendContentForWhatsApp = createAudioSendContentNormalizer();
+	const normalizeAudioSendContentForWhatsApp =
+		createAudioSendContentNormalizer();
 	const content = {
 		image: { url: "https://cdn.discordapp.com/attachments/test.png" },
 		mimetype: "image/png",
@@ -17,15 +18,17 @@ test("audio normalizer leaves non-audio content unchanged", async () => {
 });
 
 test("audio normalizer marks voice-like attachments and hydrates audio buffer", async () => {
-	const normalizeAudioSendContentForWhatsApp = createAudioSendContentNormalizer({
-		getLogger: () => ({ warn() {}, debug() {} }),
-		normalizeBridgeMessageId: (value) => value,
-		toBuffer: (value) => {
-			if (Buffer.isBuffer(value)) return value;
-			if (value instanceof Uint8Array) return Buffer.from(value);
-			return null;
+	const normalizeAudioSendContentForWhatsApp = createAudioSendContentNormalizer(
+		{
+			getLogger: () => ({ warn() {}, debug() {} }),
+			normalizeBridgeMessageId: (value) => value,
+			toBuffer: (value) => {
+				if (Buffer.isBuffer(value)) return value;
+				if (value instanceof Uint8Array) return Buffer.from(value);
+				return null;
+			},
 		},
-	});
+	);
 	const payload = Buffer.from("tiny-audio", "utf8");
 	const waveform = Buffer.from([1, 4, 2, 0, 5]);
 	const normalized = await normalizeAudioSendContentForWhatsApp({

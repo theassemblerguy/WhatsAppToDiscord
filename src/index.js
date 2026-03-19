@@ -2,14 +2,13 @@ import nodeCrypto from "node:crypto";
 import fs from "node:fs";
 import pino from "pino";
 import pretty from "pino-pretty";
-
+import packageInfo from "../package.json" with { type: "json" };
 import discordHandler from "./discordHandler.js";
 import { isRecoverableUnhandledRejection } from "./processErrors.js";
 import state from "./state.js";
 import storage from "./storage.js";
 import utils from "./utils.js";
 import whatsappHandler from "./whatsappHandler.js";
-import packageInfo from "../package.json" with { type: "json" };
 
 const isSmokeTest = process.env.WA2DC_SMOKE_TEST === "1";
 

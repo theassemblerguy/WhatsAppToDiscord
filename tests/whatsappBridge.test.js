@@ -8,6 +8,10 @@ import {
 	resetClientFactoryOverrides,
 	setClientFactoryOverrides,
 } from "../src/clientFactories.js";
+import {
+	resetImageLibTestOverrides,
+	setImageLibTestOverrides,
+} from "../src/imageLibs.js";
 import messageStore from "../src/messageStore.js";
 import { resetNewsletterBridgeState } from "../src/newsletterBridge.js";
 import state from "../src/state.js";
@@ -30,7 +34,10 @@ const restoreSet = (target, snapshot) => {
 		target.add(entry);
 	});
 };
-const waitFor = async (predicate, { timeoutMs = 1000, intervalMs = 5 } = {}) => {
+const waitFor = async (
+	predicate,
+	{ timeoutMs = 1000, intervalMs = 5 } = {},
+) => {
 	const deadline = Date.now() + timeoutMs;
 	while (true) {
 		if (predicate()) return true;
@@ -1516,9 +1523,12 @@ test("Discord voice-style audio attachments are sent as WhatsApp ptt messages", 
 			},
 		});
 
-		const sent = await waitFor(() => harness.fakeClient.sendCalls.length === 1, {
-			timeoutMs: 1500,
-		});
+		const sent = await waitFor(
+			() => harness.fakeClient.sendCalls.length === 1,
+			{
+				timeoutMs: 1500,
+			},
+		);
 
 		assert.equal(sent, true);
 		assert.equal(harness.fakeClient.sendCalls.length, 1);
@@ -1572,9 +1582,12 @@ test("Regular Discord audio attachments are not forced into ptt mode", async () 
 			},
 		});
 
-		const sent = await waitFor(() => harness.fakeClient.sendCalls.length === 1, {
-			timeoutMs: 1500,
-		});
+		const sent = await waitFor(
+			() => harness.fakeClient.sendCalls.length === 1,
+			{
+				timeoutMs: 1500,
+			},
+		);
 
 		assert.equal(sent, true);
 		assert.equal(harness.fakeClient.sendCalls.length, 1);
@@ -1637,9 +1650,12 @@ test("Unsupported Discord static WebP attachments are normalized before WhatsApp
 			},
 		});
 
-		const sent = await waitFor(() => harness.fakeClient.sendCalls.length === 1, {
-			timeoutMs: 1500,
-		});
+		const sent = await waitFor(
+			() => harness.fakeClient.sendCalls.length === 1,
+			{
+				timeoutMs: 1500,
+			},
+		);
 
 		assert.equal(sent, true);
 		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
@@ -1649,6 +1665,81 @@ test("Unsupported Discord static WebP attachments are normalized before WhatsApp
 		assert.equal(sentContent.width, 2);
 		assert.equal(sentContent.height, 2);
 	} finally {
+		harness.cleanup();
+	}
+});
+
+test("Unsupported Discord TIFF attachments fall back to Jimp when sharp is unavailable", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const sharpMod = await import("sharp");
+		const sharp = sharpMod?.default || sharpMod;
+		const jimp = await import("jimp");
+		const tiffBytes = await sharp({
+			create: {
+				width: 3,
+				height: 2,
+				channels: 4,
+				background: { r: 0, g: 255, b: 0, alpha: 1 },
+			},
+		})
+			.tiff()
+			.toBuffer();
+		const attachmentUrl = `data:image/tiff;base64,${tiffBytes.toString("base64")}`;
+
+		setImageLibTestOverrides({
+			getImageSharp: async () => null,
+			getImageJimp: async () => jimp,
+		});
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			image: { url: attachment.url },
+			mimetype: attachment.contentType,
+		});
+
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@s.whatsapp.net",
+			forwardContext: null,
+			message: {
+				id: "dc-static-tiff-jimp-fallback",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: attachmentUrl,
+							name: "paste.tiff",
+							contentType: "image/tiff",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+
+		const sent = await waitFor(
+			() => harness.fakeClient.sendCalls.length === 1,
+			{
+				timeoutMs: 1500,
+			},
+		);
+
+		assert.equal(sent, true);
+		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
+		assert.ok(Buffer.isBuffer(sentContent.image));
+		assert.equal(sentContent.mimetype, "image/png");
+		assert.equal(sentContent.document, undefined);
+		assert.equal(sentContent.width, 3);
+		assert.equal(sentContent.height, 2);
+	} finally {
+		resetImageLibTestOverrides();
 		harness.cleanup();
 	}
 });
@@ -1696,9 +1787,12 @@ test("Unsupported Discord image attachments fall back to document sends when nor
 			},
 		});
 
-		const sent = await waitFor(() => harness.fakeClient.sendCalls.length === 1, {
-			timeoutMs: 1500,
-		});
+		const sent = await waitFor(
+			() => harness.fakeClient.sendCalls.length === 1,
+			{
+				timeoutMs: 1500,
+			},
+		);
 
 		assert.equal(sent, true);
 		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
@@ -2352,7 +2446,9 @@ test("Newsletter unsupported attachments are skipped with FAQ notice", async () 
 			},
 		});
 
-		const notified = await waitFor(() => notices.length === 1, { timeoutMs: 1500 });
+		const notified = await waitFor(() => notices.length === 1, {
+			timeoutMs: 1500,
+		});
 
 		assert.equal(notified, true);
 		assert.equal(harness.fakeClient.sendCalls.length, 0);

@@ -53,30 +53,28 @@ test("Discord GIF upload previews prefer a single animated video candidate", () 
 	const previewUrl =
 		"https://media.discordapp.net/attachments/123/456/funny-cat.mp4?width=320&height=240";
 
-	const collected = utils.discord.collectMessageMedia(
-		{
-			attachments: new Map([
-				[
-					"attachment-1",
-					{
-						id: "attachment-1",
-						url: attachmentUrl,
-						name: "funny-cat.gif",
-						contentType: "image/gif",
-					},
-				],
-			]),
-			stickers: new Map(),
-			embeds: [
+	const collected = utils.discord.collectMessageMedia({
+		attachments: new Map([
+			[
+				"attachment-1",
 				{
-					title: "Funny Cat",
-					video: {
-						url: previewUrl,
-					},
+					id: "attachment-1",
+					url: attachmentUrl,
+					name: "funny-cat.gif",
+					contentType: "image/gif",
 				},
 			],
-		},
-	);
+		]),
+		stickers: new Map(),
+		embeds: [
+			{
+				title: "Funny Cat",
+				video: {
+					url: previewUrl,
+				},
+			},
+		],
+	});
 
 	assert.equal(collected.attachments.length, 1);
 	assert.equal(collected.attachments[0]?.url, previewUrl);

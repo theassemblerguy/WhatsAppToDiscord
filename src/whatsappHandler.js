@@ -1,5 +1,3 @@
-import path from "node:path";
-import { createRequire } from "node:module";
 import {
 	DisconnectReason,
 	getAggregateVotesInPollMessage,
@@ -14,6 +12,7 @@ import useSQLiteAuthState from "./auth/sqliteAuthState.js";
 import { createWhatsAppClient, getBaileysVersion } from "./clientFactories.js";
 import groupMetadataCache from "./groupMetadataCache.js";
 import { createGroupRefreshScheduler } from "./groupMetadataRefresh.js";
+import { getImageJimp, getImageSharp } from "./imageLibs.js";
 import { createAudioSendContentNormalizer } from "./internal/audioSendNormalization.js";
 import messageStore from "./messageStore.js";
 import {
@@ -219,9 +218,6 @@ const WHATSAPP_PREFER_PNG_NORMALIZATION_MIME_TYPES = new Set([
 ]);
 const newsletterLiveUpdatesExpiresAt = new Map();
 const newsletterMediaStanzaDebug = new Map();
-let newsletterImageJimpPromise = null;
-let imageSharpPromise = null;
-let packagedSharpRequire = null;
 const DISCORD_ATTACHMENT_MIME_BY_EXTENSION = {
 	gif: "image/gif",
 	jpg: "image/jpeg",
@@ -637,58 +633,6 @@ const isNewsletterImageContent = (content = {}) => {
 	return mimetype.startsWith("image/");
 };
 
-const getNewsletterImageJimp = async () => {
-	if (!newsletterImageJimpPromise) {
-		newsletterImageJimpPromise = import("jimp")
-			.then((mod) => (typeof mod?.Jimp?.read === "function" ? mod : null))
-			.catch(() => null);
-	}
-	return newsletterImageJimpPromise;
-};
-
-const getPackagedSharpRequire = () => {
-	if (!process.pkg) {
-		return null;
-	}
-	if (!packagedSharpRequire) {
-		const runtimePackagePath = path.join(
-			path.dirname(process.execPath),
-			"runtime",
-			"package.json",
-		);
-		packagedSharpRequire = createRequire(runtimePackagePath);
-	}
-	return packagedSharpRequire;
-};
-
-const getImageSharp = async () => {
-	if (!imageSharpPromise) {
-		imageSharpPromise = (async () => {
-			if (process.pkg) {
-				try {
-					const sharpFromSidecar = getPackagedSharpRequire()?.("sharp");
-					const sharp =
-						sharpFromSidecar?.default || sharpFromSidecar || null;
-					if (typeof sharp === "function") {
-						return sharp;
-					}
-				} catch {
-					return null;
-				}
-				return null;
-			}
-			try {
-				const mod = await import("sharp");
-				const sharp = mod?.default || mod;
-				return typeof sharp === "function" ? sharp : null;
-			} catch {
-				return null;
-			}
-		})();
-	}
-	return imageSharpPromise;
-};
-
 const loadImageBufferForNormalization = async (source = null) => {
 	if (Buffer.isBuffer(source)) {
 		return source;
@@ -826,7 +770,7 @@ const normalizeImageBufferWithJimp = async ({
 	sourceBuffer,
 	sourceMime,
 } = {}) => {
-	const jimp = await getNewsletterImageJimp();
+	const jimp = await getImageJimp();
 	if (!jimp) {
 		return null;
 	}
@@ -847,6 +791,32 @@ const normalizeImageBufferWithJimp = async ({
 		outboundMime,
 		width,
 		height,
+	};
+};
+
+const readImageDimensionsWithSharp = async ({ sourceBuffer } = {}) => {
+	const sharp = await getImageSharp();
+	if (!sharp) {
+		return null;
+	}
+	const metadata = await sharp(sourceBuffer, { animated: true }).metadata();
+	return {
+		decoder: "sharp",
+		width: toIntegerOrNull(metadata?.width),
+		height: toIntegerOrNull(metadata?.height),
+	};
+};
+
+const readImageDimensionsWithJimp = async ({ sourceBuffer } = {}) => {
+	const jimp = await getImageJimp();
+	if (!jimp) {
+		return null;
+	}
+	const image = await jimp.Jimp.read(sourceBuffer);
+	return {
+		decoder: "jimp",
+		width: toIntegerOrNull(image?.bitmap?.width),
+		height: toIntegerOrNull(image?.bitmap?.height),
 	};
 };
 
@@ -871,38 +841,74 @@ const normalizeNewsletterImageSendContent = async ({
 			normalizedSourceMime || content?.mimetype || "image/jpeg";
 		let width = null;
 		let height = null;
+		let lastNormalizationError = null;
 
-		const jimp = await getNewsletterImageJimp();
-		if (jimp) {
-			try {
-				const image = await jimp.Jimp.read(sourceBuffer);
-				width = toIntegerOrNull(image?.bitmap?.width);
-				height = toIntegerOrNull(image?.bitmap?.height);
-				if (shouldForceJpeg) {
-					const jpegBuffer = await image.getBuffer("image/jpeg", {
-						quality: 82,
+		if (shouldForceJpeg) {
+			for (const normalizeBuffer of [
+				normalizeImageBufferWithSharp,
+				normalizeImageBufferWithJimp,
+			]) {
+				try {
+					const normalizedResult = await normalizeBuffer({
+						sourceBuffer,
+						sourceMime: "image/jpeg",
 					});
-					if (jpegBuffer?.length) {
-						outboundBuffer = jpegBuffer;
-						outboundMime = "image/jpeg";
+					if (!normalizedResult?.outboundBuffer?.length) {
+						continue;
 					}
-				}
-			} catch (err) {
-				if (shouldForceJpeg) {
-					state.logger?.debug?.(
-						{
-							err,
-							jid,
-							discordMessageId: normalizeBridgeMessageId(discordMessageId),
-							sourceMime: normalizedSourceMime || null,
-						},
-						"Failed to decode newsletter image for JPEG normalization; falling back to raw buffer send",
-					);
-					outboundMime = normalizedSourceMime || "image/jpeg";
+					outboundBuffer = normalizedResult.outboundBuffer;
+					outboundMime = normalizedResult.outboundMime || "image/jpeg";
+					width = normalizedResult.width;
+					height = normalizedResult.height;
+					lastNormalizationError = null;
+					break;
+				} catch (err) {
+					lastNormalizationError = err;
 				}
 			}
-		} else if (shouldForceJpeg) {
-			outboundMime = normalizedSourceMime || "image/jpeg";
+			if (!width || !height) {
+				for (const readImageDimensions of [
+					readImageDimensionsWithSharp,
+					readImageDimensionsWithJimp,
+				]) {
+					try {
+						const dimensions = await readImageDimensions({ sourceBuffer });
+						if (!dimensions) {
+							continue;
+						}
+						width = dimensions.width;
+						height = dimensions.height;
+						break;
+					} catch {}
+				}
+			}
+			if (outboundMime !== "image/jpeg" && lastNormalizationError) {
+				state.logger?.debug?.(
+					{
+						err: lastNormalizationError,
+						jid,
+						discordMessageId: normalizeBridgeMessageId(discordMessageId),
+						sourceMime: normalizedSourceMime || null,
+					},
+					"Failed to decode newsletter image for JPEG normalization; falling back to raw buffer send",
+				);
+				outboundMime = normalizedSourceMime || "image/jpeg";
+			}
+		} else {
+			for (const readImageDimensions of [
+				readImageDimensionsWithSharp,
+				readImageDimensionsWithJimp,
+			]) {
+				try {
+					const dimensions = await readImageDimensions({ sourceBuffer });
+					if (!dimensions) {
+						continue;
+					}
+					width = dimensions.width;
+					height = dimensions.height;
+					break;
+				} catch {}
+			}
 		}
 
 		const normalizedContent = {
@@ -4328,156 +4334,158 @@ const connectToWhatsApp = async (retry = 1) => {
 	client.ev.on(
 		"discordReaction",
 		async ({ jid, reaction, removed, messageId: resolvedMessageId }) => {
-		if (!allowsDiscordToWhatsApp()) {
-			return;
-		}
-
-		const targetJid = normalizeSendJid(jid);
-		const newsletterChat = isNewsletterJid(targetJid);
-		const mappedMessageId =
-			normalizeBridgeMessageId(resolvedMessageId) ||
-			normalizeBridgeMessageId(state.lastMessages[reaction.message.id]);
-		if (!mappedMessageId && !newsletterChat) {
-			state.logger?.warn?.(
-				{
-					jid: targetJid,
-					discordMessageId: reaction?.message?.id,
-				},
-				"Skipping Discord reaction because the linked WhatsApp message ID is unavailable",
-			);
-			return;
-		}
-		const key = {
-			id: mappedMessageId,
-			fromMe:
-				reaction.message.webhookId == null ||
-				reaction.message.author.username === "You",
-			remoteJid: targetJid,
-		};
-
-		if (targetJid.endsWith("@g.us")) {
-			key.participant = utils.whatsapp.toJid(reaction.message.author.username);
-		}
-
-		if (newsletterChat) {
-			await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
-			const candidateId = normalizeBridgeMessageId(key.id);
-			const hasPendingSend = Boolean(
-				getPendingNewsletterSend({
-					jid: targetJid,
-					outboundId: candidateId,
-					discordMessageId: reaction?.message?.id,
-				}),
-			);
-			let serverId = await waitForNewsletterServerId({
-				discordMessageId: reaction?.message?.id,
-				candidateId: key.id,
-				timeoutMs: hasPendingSend
-					? NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS
-					: NEWSLETTER_SERVER_ID_WAIT_WITHOUT_PENDING_MS,
-				pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
-			});
-			if (!serverId) {
-				serverId = await resolveNewsletterServerIdFromFetch({
-					client,
-					jid: targetJid,
-					discordMessageId: reaction?.message?.id,
-					candidateId,
-				});
+			if (!allowsDiscordToWhatsApp()) {
+				return;
 			}
-			const actionId = serverId || candidateId;
-			if (!actionId) {
+
+			const targetJid = normalizeSendJid(jid);
+			const newsletterChat = isNewsletterJid(targetJid);
+			const mappedMessageId =
+				normalizeBridgeMessageId(resolvedMessageId) ||
+				normalizeBridgeMessageId(state.lastMessages[reaction.message.id]);
+			if (!mappedMessageId && !newsletterChat) {
 				state.logger?.warn?.(
 					{
 						jid: targetJid,
 						discordMessageId: reaction?.message?.id,
-						candidateId: key.id,
 					},
-					"Timed out waiting for newsletter server ID before reaction",
+					"Skipping Discord reaction because the linked WhatsApp message ID is unavailable",
 				);
-				await reaction?.message?.channel
-					?.send(
-						"Couldn't send that reaction yet because the newsletter server message ID is still unavailable.",
-					)
-					.catch(() => {});
 				return;
 			}
-			if (!serverId && candidateId) {
-				const sendAckError = getNewsletterAckError(candidateId);
-				if (sendAckError) {
+			const key = {
+				id: mappedMessageId,
+				fromMe:
+					reaction.message.webhookId == null ||
+					reaction.message.author.username === "You",
+				remoteJid: targetJid,
+			};
+
+			if (targetJid.endsWith("@g.us")) {
+				key.participant = utils.whatsapp.toJid(
+					reaction.message.author.username,
+				);
+			}
+
+			if (newsletterChat) {
+				await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
+				const candidateId = normalizeBridgeMessageId(key.id);
+				const hasPendingSend = Boolean(
+					getPendingNewsletterSend({
+						jid: targetJid,
+						outboundId: candidateId,
+						discordMessageId: reaction?.message?.id,
+					}),
+				);
+				let serverId = await waitForNewsletterServerId({
+					discordMessageId: reaction?.message?.id,
+					candidateId: key.id,
+					timeoutMs: hasPendingSend
+						? NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS
+						: NEWSLETTER_SERVER_ID_WAIT_WITHOUT_PENDING_MS,
+					pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
+				});
+				if (!serverId) {
+					serverId = await resolveNewsletterServerIdFromFetch({
+						client,
+						jid: targetJid,
+						discordMessageId: reaction?.message?.id,
+						candidateId,
+					});
+				}
+				const actionId = serverId || candidateId;
+				if (!actionId) {
+					state.logger?.warn?.(
+						{
+							jid: targetJid,
+							discordMessageId: reaction?.message?.id,
+							candidateId: key.id,
+						},
+						"Timed out waiting for newsletter server ID before reaction",
+					);
+					await reaction?.message?.channel
+						?.send(
+							"Couldn't send that reaction yet because the newsletter server message ID is still unavailable.",
+						)
+						.catch(() => {});
+					return;
+				}
+				if (!serverId && candidateId) {
+					const sendAckError = getNewsletterAckError(candidateId);
+					if (sendAckError) {
+						state.logger?.warn?.(
+							{
+								jid: targetJid,
+								discordMessageId: reaction?.message?.id,
+								candidateId,
+								error: sendAckError,
+							},
+							"Skipping newsletter reaction because original message was rejected by WhatsApp ack",
+						);
+						await reaction?.message?.channel
+							?.send(
+								`Couldn't react because the original newsletter send failed (ack ${sendAckError}).`,
+							)
+							.catch(() => {});
+						return;
+					}
 					state.logger?.warn?.(
 						{
 							jid: targetJid,
 							discordMessageId: reaction?.message?.id,
 							candidateId,
-							error: sendAckError,
 						},
-						"Skipping newsletter reaction because original message was rejected by WhatsApp ack",
+						"Timed out waiting for newsletter server ID before reaction; falling back to outbound message ID",
 					);
-					await reaction?.message?.channel
-						?.send(
-							`Couldn't react because the original newsletter send failed (ack ${sendAckError}).`,
-						)
-						.catch(() => {});
+				}
+				if (typeof client.newsletterReactMessage !== "function") {
+					state.logger?.warn?.(
+						{ jid: targetJid },
+						"newsletterReactMessage is unavailable on this WhatsApp client",
+					);
 					return;
 				}
-				state.logger?.warn?.(
-					{
-						jid: targetJid,
-						discordMessageId: reaction?.message?.id,
-						candidateId,
-					},
-					"Timed out waiting for newsletter server ID before reaction; falling back to outbound message ID",
-				);
-			}
-			if (typeof client.newsletterReactMessage !== "function") {
-				state.logger?.warn?.(
-					{ jid: targetJid },
-					"newsletterReactMessage is unavailable on this WhatsApp client",
-				);
+				state.lastMessages[reaction.message.id] = actionId;
+				state.lastMessages[actionId] = reaction.message.id;
+
+				try {
+					await client.newsletterReactMessage(
+						targetJid,
+						actionId,
+						removed ? undefined : reaction.emoji.name,
+					);
+					state.sentReactions.add(actionId);
+				} catch (err) {
+					state.logger?.error(err);
+					await reaction?.message?.channel
+						?.send(
+							"Couldn't apply that reaction on the WhatsApp newsletter message.",
+						)
+						.catch(() => {});
+				}
 				return;
 			}
-			state.lastMessages[reaction.message.id] = actionId;
-			state.lastMessages[actionId] = reaction.message.id;
 
+			const reactionOptions = buildSendOptionsForJid(targetJid);
 			try {
-				await client.newsletterReactMessage(
+				const reactionMsg = await client.sendMessage(
 					targetJid,
-					actionId,
-					removed ? undefined : reaction.emoji.name,
+					{
+						react: {
+							text: removed ? "" : reaction.emoji.name,
+							key,
+						},
+					},
+					reactionOptions,
 				);
-				state.sentReactions.add(actionId);
+				const messageId = reactionMsg.key.id;
+				state.lastMessages[messageId] = true;
+				state.sentMessages.add(messageId);
+				state.sentReactions.add(key.id);
 			} catch (err) {
 				state.logger?.error(err);
-				await reaction?.message?.channel
-					?.send(
-						"Couldn't apply that reaction on the WhatsApp newsletter message.",
-					)
-					.catch(() => {});
 			}
-			return;
-		}
-
-		const reactionOptions = buildSendOptionsForJid(targetJid);
-		try {
-			const reactionMsg = await client.sendMessage(
-				targetJid,
-				{
-					react: {
-						text: removed ? "" : reaction.emoji.name,
-						key,
-					},
-				},
-				reactionOptions,
-			);
-			const messageId = reactionMsg.key.id;
-			state.lastMessages[messageId] = true;
-			state.sentMessages.add(messageId);
-			state.sentReactions.add(key.id);
-		} catch (err) {
-			state.logger?.error(err);
-		}
-	},
+		},
 	);
 
 	client.ev.on("discordDelete", async ({ jid, id, discordMessageId }) => {

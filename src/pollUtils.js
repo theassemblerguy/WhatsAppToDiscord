@@ -92,7 +92,7 @@ const buildPollVotePayload = ({
 
 export {
 	buildPollVotePayload,
+	getPollEncKey,
 	getPollFromMessage,
 	getPollOptions,
-	getPollEncKey,
 };

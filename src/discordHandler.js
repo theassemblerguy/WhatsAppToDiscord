@@ -43,10 +43,7 @@ const PIN_DURATION_PRESETS = {
 	"7d": 7 * 24 * 60 * 60,
 	"30d": 30 * 24 * 60 * 60,
 };
-const AnnouncementChannelTypes = [
-	ChannelType.GuildAnnouncement,
-	"GUILD_NEWS",
-];
+const AnnouncementChannelTypes = [ChannelType.GuildAnnouncement, "GUILD_NEWS"];
 const TextBridgeChannelTypes = [
 	ChannelType.GuildText,
 	ChannelType.GuildAnnouncement,
@@ -525,9 +522,7 @@ const cacheQuotedWhatsAppMessageLocation = ({
 const buildForwardContext = (message, rawContext = null) => {
 	const isReplyMessage =
 		message.type === MessageType.Reply || message.type === "REPLY";
-	const fallbackIsForwarded = Boolean(
-		message.reference && !isReplyMessage,
-	);
+	const fallbackIsForwarded = Boolean(message.reference && !isReplyMessage);
 	const sourceChannelId =
 		rawContext?.sourceChannelId || message.reference?.channelId || null;
 	const sourceMessageId =
@@ -627,15 +622,16 @@ const resolveForwardSourceFromQuote = async (message) => {
 	const sourceChannelId = await resolveForwardSourceChannelId(quotedSourceJid);
 	if (!quotedWaId && !quotedSourceJid) return null;
 
-	const mappedDiscordIdRaw = quotedWaId ? state.lastMessages?.[quotedWaId] : null;
+	const mappedDiscordIdRaw = quotedWaId
+		? state.lastMessages?.[quotedWaId]
+		: null;
 	const mappedDiscordId = normalizeBridgeMessageId(mappedDiscordIdRaw);
 	const cachedByQuotedWaId = quotedWaId
 		? getCachedQuotedWhatsAppMessageLocation(quotedWaId, mappedDiscordId)
 		: null;
 	if (cachedByQuotedWaId?.channelId || cachedByQuotedWaId?.url) {
 		return {
-			channelId:
-				cachedByQuotedWaId.channelId || sourceChannelId || null,
+			channelId: cachedByQuotedWaId.channelId || sourceChannelId || null,
 			url: cachedByQuotedWaId.url || null,
 		};
 	}
@@ -1113,15 +1109,15 @@ const sendWhatsappMessage = async (
 				await lastDcMessage.crosspost();
 			}
 
-				const waIdsForChunk = idChunks[i] || [];
-				for (const waId of waIdsForChunk) {
-					state.lastMessages[waId] = lastDiscordMessageId;
-					cacheQuotedWhatsAppMessageLocation({
-						whatsAppMessageId: waId,
-						discordMessageId: lastDiscordMessageId,
-						fallbackChannelId: webhook.channelId,
-					});
-				}
+			const waIdsForChunk = idChunks[i] || [];
+			for (const waId of waIdsForChunk) {
+				state.lastMessages[waId] = lastDiscordMessageId;
+				cacheQuotedWhatsAppMessageLocation({
+					whatsAppMessageId: waId,
+					discordMessageId: lastDiscordMessageId,
+					fallbackChannelId: webhook.channelId,
+				});
+			}
 			if (i === 0) {
 				const primaryWaId =
 					waIdsForChunk[0] ||
@@ -5537,28 +5533,28 @@ client.on("messageDelete", async (message) => {
 		...new Set(waIds.map((id) => normalizeBridgeMessageId(id)).filter(Boolean)),
 	];
 	const newsletterChat = isNewsletterJid(jid);
-		if (newsletterChat) {
-			if (
-				message.webhookId == null &&
-				!(message.author?.bot && !state.settings.redirectBots) &&
-				message.author?.id !== client.user.id
-			) {
-				await message.channel.send(
-					"Newsletter message deletion isn't supported by Baileys yet. Please delete the message directly in WhatsApp on your phone.",
-				);
-			}
-			for (const waId of normalizedWaIds) {
-				delete state.lastMessages[waId];
-				clearTimedCacheEntry(
-					quotedWhatsAppMessageLocationCache,
-					quotedWhatsAppMessageLocationTimers,
-					waId,
-				);
-			}
-			delete state.lastMessages[message.id];
-			clearPinExpiryNotice(message.id);
-			return;
+	if (newsletterChat) {
+		if (
+			message.webhookId == null &&
+			!(message.author?.bot && !state.settings.redirectBots) &&
+			message.author?.id !== client.user.id
+		) {
+			await message.channel.send(
+				"Newsletter message deletion isn't supported by Baileys yet. Please delete the message directly in WhatsApp on your phone.",
+			);
 		}
+		for (const waId of normalizedWaIds) {
+			delete state.lastMessages[waId];
+			clearTimedCacheEntry(
+				quotedWhatsAppMessageLocationCache,
+				quotedWhatsAppMessageLocationTimers,
+				waId,
+			);
+		}
+		delete state.lastMessages[message.id];
+		clearPinExpiryNotice(message.id);
+		return;
+	}
 	const newsletterServerId = newsletterChat
 		? resolveNewsletterServerIdForDiscordMessage(
 				message.id,

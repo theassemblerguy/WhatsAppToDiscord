@@ -19,6 +19,7 @@ import discordJs from "discord.js";
 import * as linkPreview from "link-preview-js";
 import QRCode from "qrcode";
 import { Agent } from "undici";
+import { getImageJimp, getImageSharp } from "./imageLibs.js";
 import messageStore from "./messageStore.js";
 import state from "./state.js";
 import storage from "./storage.js";
@@ -818,7 +819,10 @@ const isVideoLikeAttachment = (attachment = {}) =>
 		attachment?.contentType || attachment?.content_type,
 	).startsWith("video/");
 
-const shouldPreferGifEmbedAttachment = (attachment = {}, gifEmbedEntry = {}) => {
+const shouldPreferGifEmbedAttachment = (
+	attachment = {},
+	gifEmbedEntry = {},
+) => {
 	if (
 		!isGifLikeAttachment(attachment) ||
 		!isVideoLikeAttachment(gifEmbedEntry?.attachment)
@@ -984,13 +988,20 @@ const buildHighQualityThumbnail = async (
 
 		let jpegThumbnail;
 		try {
-			const jimp = await import("jimp");
-			if (typeof jimp?.Jimp?.read === "function") {
-				const img = await jimp.Jimp.read(buffer);
-				const width = 192;
-				jpegThumbnail = await img
-					.resize({ w: width, mode: jimp.ResizeStrategy.BILINEAR })
-					.getBuffer("image/jpeg", { quality: 50 });
+			const sharp = await getImageSharp();
+			if (sharp) {
+				jpegThumbnail = await sharp(buffer, { animated: true })
+					.resize({ width: 192, fit: "inside", withoutEnlargement: true })
+					.jpeg({ quality: 50 })
+					.toBuffer();
+			} else {
+				const jimp = await getImageJimp();
+				if (jimp) {
+					const img = await jimp.Jimp.read(buffer);
+					jpegThumbnail = await img
+						.resize({ w: 192, mode: jimp.ResizeStrategy.BILINEAR })
+						.getBuffer("image/jpeg", { quality: 50 });
+				}
 			}
 		} catch (err) {
 			state.logger?.debug?.(
@@ -2113,10 +2124,10 @@ const discord = {
 		if (!id) return null;
 		const format = sticker?.format;
 		let extension = "png";
-			const baseUrl = `https://media.discordapp.net/stickers/${id}`;
-			if (format === StickerFormatType.GIF) {
-				extension = "gif";
-			}
+		const baseUrl = `https://media.discordapp.net/stickers/${id}`;
+		if (format === StickerFormatType.GIF) {
+			extension = "gif";
+		}
 		const url = `${baseUrl}.${extension}${extension === "png" ? "?size=320" : ""}`;
 		return {
 			url,
@@ -2159,9 +2170,7 @@ const discord = {
 					url: mediaUrl,
 					name: `${sanitizeFileName(baseName, "discord-gif")}.${extension}`,
 					contentType,
-					...(contentType.startsWith("video/")
-						? { gifPlayback: true }
-						: {}),
+					...(contentType.startsWith("video/") ? { gifPlayback: true } : {}),
 				},
 				sourceUrl: shouldConsumeUrl ? embed?.url : null,
 				shareUrl: typeof embed?.url === "string" ? embed.url : null,

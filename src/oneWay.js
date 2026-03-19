@@ -26,9 +26,9 @@ const oneWayAllowsDiscordToWhatsApp = (oneWayValue) =>
 	hasOneWayDirection(oneWayValue, ONE_WAY_DIRECTIONS.DISCORD_TO_WHATSAPP);
 
 export {
+	hasOneWayDirection,
 	ONE_WAY_DIRECTIONS,
 	ONE_WAY_MODES,
-	hasOneWayDirection,
-	oneWayAllowsWhatsAppToDiscord,
 	oneWayAllowsDiscordToWhatsApp,
+	oneWayAllowsWhatsAppToDiscord,
 };

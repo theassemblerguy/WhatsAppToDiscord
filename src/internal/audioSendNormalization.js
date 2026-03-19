@@ -26,7 +26,8 @@ const decodeDataUrlBuffer = (sourceUrl = "") => {
 };
 
 const loadAttachmentBufferForWhatsApp = async (attachment = {}) => {
-	const sourceUrl = typeof attachment?.url === "string" ? attachment.url.trim() : "";
+	const sourceUrl =
+		typeof attachment?.url === "string" ? attachment.url.trim() : "";
 	if (!sourceUrl) return null;
 	if (sourceUrl.startsWith("data:")) {
 		const decoded = decodeDataUrlBuffer(sourceUrl);
@@ -132,7 +133,9 @@ const transcodeAudioBufferToOggOpus = async (inputBuffer) => {
 		ffmpeg.on("close", (code) => {
 			if (code !== 0) {
 				const stderrText = Buffer.concat(stderrChunks).toString("utf8").trim();
-				finish(new Error(`ffmpeg_exit_${code}${stderrText ? `:${stderrText}` : ""}`));
+				finish(
+					new Error(`ffmpeg_exit_${code}${stderrText ? `:${stderrText}` : ""}`),
+				);
 				return;
 			}
 			const output = Buffer.concat(stdoutChunks);
@@ -157,12 +160,7 @@ export const createAudioSendContentNormalizer = ({
 	const loggerForCall = () =>
 		typeof getLogger === "function" ? getLogger() : getLogger;
 
-	return async ({
-		attachment,
-		content,
-		jid,
-		discordMessageId,
-	} = {}) => {
+	return async ({ attachment, content, jid, discordMessageId } = {}) => {
 		if (!content || typeof content !== "object" || !content.audio) {
 			return content;
 		}
@@ -175,7 +173,10 @@ export const createAudioSendContentNormalizer = ({
 
 		const logger = loggerForCall();
 		const normalizedContent = { ...content };
-		const isVoiceLike = isDiscordVoiceLikeAttachment(attachment, normalizedMime);
+		const isVoiceLike = isDiscordVoiceLikeAttachment(
+			attachment,
+			normalizedMime,
+		);
 		if (isVoiceLike) {
 			normalizedContent.ptt = true;
 			const duration =
