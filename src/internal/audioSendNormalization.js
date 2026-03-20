@@ -3,7 +3,6 @@ import childProcess from "node:child_process";
 const DISCORD_AUDIO_FETCH_MAX_BYTES = 25 * 1024 * 1024;
 const DISCORD_AUDIO_TRANSCODE_TIMEOUT_MS = 20 * 1000;
 const DISCORD_VOICE_NAME_HINT_REGEX = /(voice|ptt|push-?to-?talk)/i;
-const WHATSAPP_WAVEFORM_SAMPLES = 64;
 
 const normalizeMimeType = (value = "") => {
 	if (typeof value !== "string") return "";
@@ -75,7 +74,6 @@ const isDiscordVoiceLikeAttachment = (attachment = {}, mimetype = "") => {
 		return Number.isFinite(value) && value > 0;
 	});
 	return (
-		Boolean(attachment?.waveform) ||
 		hasDuration ||
 		DISCORD_VOICE_NAME_HINT_REGEX.test(name) ||
 		normalizedMime === "audio/ogg" ||
@@ -152,72 +150,9 @@ const transcodeAudioBufferToOggOpus = async (inputBuffer) => {
 	});
 };
 
-const generateWhatsAppStyleWaveform = async (
-	inputBuffer,
-	{ loadAudioDecoder, logger } = {},
-) => {
-	if (!inputBuffer?.length) return null;
-	try {
-		const decoderModule =
-			typeof loadAudioDecoder === "function"
-				? await loadAudioDecoder()
-				: await import("audio-decode");
-		const decoder =
-			typeof decoderModule === "function"
-				? decoderModule
-				: decoderModule?.default;
-		if (typeof decoder !== "function") {
-			throw new Error("audio_decoder_unavailable");
-		}
-		const audioBuffer = await decoder(inputBuffer);
-		const rawData =
-			typeof audioBuffer?.getChannelData === "function"
-				? audioBuffer.getChannelData(0)
-				: null;
-		if (!rawData?.length) {
-			return null;
-		}
-		const blockSize = Math.max(
-			1,
-			Math.floor(rawData.length / WHATSAPP_WAVEFORM_SAMPLES),
-		);
-		const filteredData = [];
-		for (let i = 0; i < WHATSAPP_WAVEFORM_SAMPLES; i++) {
-			const blockStart = blockSize * i;
-			if (blockStart >= rawData.length) {
-				filteredData.push(0);
-				continue;
-			}
-			const blockEnd = Math.min(rawData.length, blockStart + blockSize);
-			let sum = 0;
-			let count = 0;
-			for (let j = blockStart; j < blockEnd; j++) {
-				sum += Math.abs(rawData[j] || 0);
-				count += 1;
-			}
-			filteredData.push(count > 0 ? sum / count : 0);
-		}
-		const peak = Math.max(...filteredData, 0);
-		if (!(peak > 0)) {
-			return new Uint8Array(WHATSAPP_WAVEFORM_SAMPLES);
-		}
-		return new Uint8Array(
-			filteredData.map((entry) => {
-				const normalized = Math.max(0, Math.min(1, entry / peak));
-				return Math.floor(normalized * 100);
-			}),
-		);
-	} catch (err) {
-		logger?.debug?.({ err }, "Failed to generate WhatsApp voice-note waveform");
-		return null;
-	}
-};
-
 export const createAudioSendContentNormalizer = ({
 	getLogger = null,
 	normalizeBridgeMessageId = (value) => value,
-	toBuffer = (value) => value,
-	loadAudioDecoder = null,
 } = {}) => {
 	let ffmpegMissingLogged = false;
 	const loggerForCall = () =>
@@ -272,20 +207,6 @@ export const createAudioSendContentNormalizer = ({
 		}
 
 		normalizedContent.audio = sourceBuffer;
-		if (isVoiceLike) {
-			const generatedWaveform = await generateWhatsAppStyleWaveform(sourceBuffer, {
-				loadAudioDecoder,
-				logger,
-			});
-			if (generatedWaveform?.length) {
-				normalizedContent.waveform = Buffer.from(generatedWaveform);
-			} else {
-				const fallbackWaveform = toBuffer(attachment?.waveform);
-				if (fallbackWaveform?.length) {
-					normalizedContent.waveform = fallbackWaveform;
-				}
-			}
-		}
 		if (!isVoiceLike) {
 			return normalizedContent;
 		}
