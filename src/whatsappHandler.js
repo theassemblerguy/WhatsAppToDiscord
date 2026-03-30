@@ -17,7 +17,7 @@ import useSQLiteAuthState from "./auth/sqliteAuthState.js";
 import { createWhatsAppClient, getBaileysVersion } from "./clientFactories.js";
 import groupMetadataCache from "./groupMetadataCache.js";
 import { createGroupRefreshScheduler } from "./groupMetadataRefresh.js";
-import { getImageJimp, getImageSharp } from "./imageLibs.js";
+import { getImageSharp } from "./imageLibs.js";
 import { createAudioSendContentNormalizer } from "./internal/audioSendNormalization.js";
 import { createStickerSendContentNormalizer } from "./internal/stickerSendNormalization.js";
 import messageStore from "./messageStore.js";
@@ -783,34 +783,6 @@ const normalizeImageBufferWithSharp = async ({
 	};
 };
 
-const normalizeImageBufferWithJimp = async ({
-	sourceBuffer,
-	sourceMime,
-} = {}) => {
-	const jimp = await getImageJimp();
-	if (!jimp) {
-		return null;
-	}
-	const image = await jimp.Jimp.read(sourceBuffer);
-	const width = toIntegerOrNull(image?.bitmap?.width);
-	const height = toIntegerOrNull(image?.bitmap?.height);
-	const outboundMime = chooseNormalizedStaticImageMimeType({
-		sourceMime,
-	});
-	const outboundBuffer =
-		outboundMime === "image/jpeg"
-			? await image.getBuffer("image/jpeg", { quality: 82 })
-			: await image.getBuffer("image/png");
-	return {
-		decoder: "jimp",
-		animated: false,
-		outboundBuffer,
-		outboundMime,
-		width,
-		height,
-	};
-};
-
 const readImageDimensionsWithSharp = async ({ sourceBuffer } = {}) => {
 	const sharp = await getImageSharp();
 	if (!sharp) {
@@ -821,19 +793,6 @@ const readImageDimensionsWithSharp = async ({ sourceBuffer } = {}) => {
 		decoder: "sharp",
 		width: toIntegerOrNull(metadata?.width),
 		height: toIntegerOrNull(metadata?.height),
-	};
-};
-
-const readImageDimensionsWithJimp = async ({ sourceBuffer } = {}) => {
-	const jimp = await getImageJimp();
-	if (!jimp) {
-		return null;
-	}
-	const image = await jimp.Jimp.read(sourceBuffer);
-	return {
-		decoder: "jimp",
-		width: toIntegerOrNull(image?.bitmap?.width),
-		height: toIntegerOrNull(image?.bitmap?.height),
 	};
 };
 
@@ -859,27 +818,6 @@ const buildJpegThumbnailWithSharp = async ({ sourceBuffer } = {}) => {
 	};
 };
 
-const buildJpegThumbnailWithJimp = async ({ sourceBuffer } = {}) => {
-	const jimp = await getImageJimp();
-	if (!jimp) {
-		return null;
-	}
-	const image = await jimp.Jimp.read(sourceBuffer);
-	return {
-		decoder: "jimp",
-		jpegThumbnail: await image
-			.resize({
-				w: WHATSAPP_OUTBOUND_JPEG_THUMB_WIDTH,
-				mode: jimp.ResizeStrategy.BILINEAR,
-			})
-			.getBuffer("image/jpeg", {
-				quality: WHATSAPP_OUTBOUND_JPEG_THUMB_QUALITY,
-			}),
-		width: toIntegerOrNull(image?.bitmap?.width),
-		height: toIntegerOrNull(image?.bitmap?.height),
-	};
-};
-
 const ensureImageThumbForWhatsAppSend = async ({
 	content,
 	jid,
@@ -897,10 +835,7 @@ const ensureImageThumbForWhatsAppSend = async ({
 		if (!sourceBuffer?.length) {
 			return content;
 		}
-		for (const buildThumbnail of [
-			buildJpegThumbnailWithSharp,
-			buildJpegThumbnailWithJimp,
-		]) {
+		for (const buildThumbnail of [buildJpegThumbnailWithSharp]) {
 			try {
 				const thumbnailResult = await buildThumbnail({ sourceBuffer });
 				if (!thumbnailResult?.jpegThumbnail?.length) {
@@ -1153,10 +1088,7 @@ const normalizeNewsletterImageSendContent = async ({
 		let lastNormalizationError = null;
 
 		if (shouldForceJpeg) {
-			for (const normalizeBuffer of [
-				normalizeImageBufferWithSharp,
-				normalizeImageBufferWithJimp,
-			]) {
+			for (const normalizeBuffer of [normalizeImageBufferWithSharp]) {
 				try {
 					const normalizedResult = await normalizeBuffer({
 						sourceBuffer,
@@ -1176,10 +1108,7 @@ const normalizeNewsletterImageSendContent = async ({
 				}
 			}
 			if (!width || !height) {
-				for (const readImageDimensions of [
-					readImageDimensionsWithSharp,
-					readImageDimensionsWithJimp,
-				]) {
+				for (const readImageDimensions of [readImageDimensionsWithSharp]) {
 					try {
 						const dimensions = await readImageDimensions({ sourceBuffer });
 						if (!dimensions) {
@@ -1204,10 +1133,7 @@ const normalizeNewsletterImageSendContent = async ({
 				outboundMime = normalizedSourceMime || "image/jpeg";
 			}
 		} else {
-			for (const readImageDimensions of [
-				readImageDimensionsWithSharp,
-				readImageDimensionsWithJimp,
-			]) {
+			for (const readImageDimensions of [readImageDimensionsWithSharp]) {
 				try {
 					const dimensions = await readImageDimensions({ sourceBuffer });
 					if (!dimensions) {
@@ -1294,10 +1220,7 @@ const normalizeRegularImageSendContentForWhatsApp = async ({
 			return fallbackToDocument();
 		}
 
-		for (const normalizeBuffer of [
-			normalizeImageBufferWithSharp,
-			normalizeImageBufferWithJimp,
-		]) {
+		for (const normalizeBuffer of [normalizeImageBufferWithSharp]) {
 			try {
 				const normalizedResult = await normalizeBuffer({
 					sourceBuffer,

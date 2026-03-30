@@ -1993,12 +1993,11 @@ test("Unsupported Discord AVIF attachments are normalized before WhatsApp send",
 	}
 });
 
-test("Unsupported Discord TIFF attachments fall back to Jimp when sharp is unavailable", async () => {
+test("Unsupported Discord TIFF attachments fall back to document sends when sharp is unavailable", async () => {
 	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
 	try {
 		const sharpMod = await import("sharp");
 		const sharp = sharpMod?.default || sharpMod;
-		const jimp = await import("jimp");
 		const tiffBytes = await sharp({
 			create: {
 				width: 3,
@@ -2013,7 +2012,6 @@ test("Unsupported Discord TIFF attachments fall back to Jimp when sharp is unava
 
 		setImageLibTestOverrides({
 			getImageSharp: async () => null,
-			getImageJimp: async () => jimp,
 		});
 		utils.whatsapp.createDocumentContent = (attachment) => ({
 			image: { url: attachment.url },
@@ -2024,7 +2022,7 @@ test("Unsupported Discord TIFF attachments fall back to Jimp when sharp is unava
 			jid: "120363123456789@s.whatsapp.net",
 			forwardContext: null,
 			message: {
-				id: "dc-static-tiff-jimp-fallback",
+				id: "dc-static-tiff-document-fallback",
 				content: "",
 				cleanContent: "",
 				webhookId: null,
@@ -2057,11 +2055,11 @@ test("Unsupported Discord TIFF attachments fall back to Jimp when sharp is unava
 
 		assert.equal(sent, true);
 		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
-		assert.ok(Buffer.isBuffer(sentContent.image));
-		assert.equal(sentContent.mimetype, "image/png");
-		assert.equal(sentContent.document, undefined);
-		assert.equal(sentContent.width, 3);
-		assert.equal(sentContent.height, 2);
+		assert.ok(sentContent.document);
+		assert.equal(sentContent.mimetype, "image/tiff");
+		assert.equal(sentContent.image, undefined);
+		assert.equal(sentContent.width, undefined);
+		assert.equal(sentContent.height, undefined);
 	} finally {
 		resetImageLibTestOverrides();
 		harness.cleanup();

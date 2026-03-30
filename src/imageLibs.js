@@ -1,7 +1,6 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 
-let imageJimpPromise = null;
 let imageSharpPromise = null;
 let packagedSharpRequire = null;
 let imageLibTestOverrides = null;
@@ -13,18 +12,6 @@ export const resetImageLibTestOverrides = () => {
 export const setImageLibTestOverrides = (overrides = null) => {
 	imageLibTestOverrides =
 		overrides && typeof overrides === "object" ? overrides : null;
-};
-
-export const getImageJimp = async () => {
-	if (typeof imageLibTestOverrides?.getImageJimp === "function") {
-		return imageLibTestOverrides.getImageJimp();
-	}
-	if (!imageJimpPromise) {
-		imageJimpPromise = import("jimp")
-			.then((mod) => (typeof mod?.Jimp?.read === "function" ? mod : null))
-			.catch(() => null);
-	}
-	return imageJimpPromise;
 };
 
 const getPackagedSharpRequire = () => {

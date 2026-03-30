@@ -21,7 +21,7 @@ import * as linkPreview from "link-preview-js";
 import QRCode from "qrcode";
 import * as tar from "tar";
 import { Agent } from "undici";
-import { getImageJimp, getImageSharp } from "./imageLibs.js";
+import { getImageSharp } from "./imageLibs.js";
 import messageStore from "./messageStore.js";
 import state from "./state.js";
 import storage from "./storage.js";
@@ -1054,14 +1054,6 @@ const buildHighQualityThumbnail = async (
 					.resize({ width: 192, fit: "inside", withoutEnlargement: true })
 					.jpeg({ quality: 50 })
 					.toBuffer();
-			} else {
-				const jimp = await getImageJimp();
-				if (jimp) {
-					const img = await jimp.Jimp.read(buffer);
-					jpegThumbnail = await img
-						.resize({ w: 192, mode: jimp.ResizeStrategy.BILINEAR })
-						.getBuffer("image/jpeg", { quality: 50 });
-				}
 			}
 		} catch (err) {
 			state.logger?.debug?.(
