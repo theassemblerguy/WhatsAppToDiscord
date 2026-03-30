@@ -6,12 +6,7 @@ import path from "node:path";
 import * as tar from "tar";
 
 const require = createRequire(import.meta.url);
-const RUNTIME_SIDECAR_DEPENDENCIES = [
-	"sharp",
-	"canvas",
-	"jsdom",
-	"lottie-web",
-];
+const RUNTIME_SIDECAR_DEPENDENCIES = ["sharp", "canvas", "jsdom", "lottie-web"];
 
 const parseArgs = (argv = []) => {
 	const parsed = {};

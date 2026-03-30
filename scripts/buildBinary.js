@@ -5,12 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
-const RUNTIME_SIDECAR_DEPENDENCIES = [
-	"sharp",
-	"canvas",
-	"jsdom",
-	"lottie-web",
-];
+const RUNTIME_SIDECAR_DEPENDENCIES = ["sharp", "canvas", "jsdom", "lottie-web"];
 
 function platformToPkgOs(platform) {
 	if (platform === "win32") return "win";
@@ -97,14 +92,14 @@ function prepareRuntimeSidecar(runtimeDir, packageSpecs) {
 	run(
 		getBin("npm"),
 		[
-				"install",
-				"--omit=dev",
-				"--no-package-lock",
-				"--no-save",
-				...packageSpecs,
-			],
-			{ cwd: runtimeDir },
-		);
+			"install",
+			"--omit=dev",
+			"--no-package-lock",
+			"--no-save",
+			...packageSpecs,
+		],
+		{ cwd: runtimeDir },
+	);
 }
 
 const args = new Set(process.argv.slice(2));

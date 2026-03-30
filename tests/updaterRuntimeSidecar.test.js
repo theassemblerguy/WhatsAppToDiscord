@@ -297,9 +297,13 @@ test("runtime archive install falls back to copy when rename crosses filesystems
 	const stagedRuntimeRoot = await fsPromises.mkdtemp(
 		path.join(os.tmpdir(), "wa2dc-runtime-exdev-staged-"),
 	);
-	const archivePath = path.join(stagedRuntimeRoot, "WA2DC-Linux.runtime.tar.gz");
+	const archivePath = path.join(
+		stagedRuntimeRoot,
+		"WA2DC-Linux.runtime.tar.gz",
+	);
 
-	const originalGetCurrentExecutablePath = utils.updater.getCurrentExecutablePath;
+	const originalGetCurrentExecutablePath =
+		utils.updater.getCurrentExecutablePath;
 	const originalRename = fs.promises.rename;
 	const originalCp = fs.promises.cp;
 	let renameFailed = false;

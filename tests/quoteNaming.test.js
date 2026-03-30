@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import messageStore from "../src/messageStore.js";
 import state from "../src/state.js";
-import storage from "../src/storage.js";
 import utils from "../src/utils.js";
+import initIsolatedStorage from "./helpers/initIsolatedStorage.js";
 
-await storage.ensureInitialized();
+await initIsolatedStorage(import.meta.url);
 
 const snapshotObject = (value) => ({ ...value });
 const restoreObject = (target, snapshot) => {

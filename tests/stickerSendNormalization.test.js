@@ -115,6 +115,8 @@ test("Lottie Discord stickers can be converted to animated WhatsApp stickers", a
 	assert.equal(normalized.width, 512);
 	assert.equal(normalized.height, 512);
 
-	const metadata = await sharp(normalized.sticker, { animated: true }).metadata();
+	const metadata = await sharp(normalized.sticker, {
+		animated: true,
+	}).metadata();
 	assert.ok((Number(metadata.pages) || 1) > 1);
 });

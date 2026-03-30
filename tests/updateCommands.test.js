@@ -14,10 +14,10 @@ import {
 	notePendingNewsletterSend,
 } from "../src/newsletterBridge.js";
 import state from "../src/state.js";
-import storage from "../src/storage.js";
 import utils from "../src/utils.js";
+import initIsolatedStorage from "./helpers/initIsolatedStorage.js";
 
-await storage.ensureInitialized();
+await initIsolatedStorage(import.meta.url);
 
 const importDiscordHandler = async (tag) =>
 	(await import(`../src/discordHandler.js?test=${encodeURIComponent(tag)}`))

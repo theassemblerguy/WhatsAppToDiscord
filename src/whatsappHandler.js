@@ -134,12 +134,13 @@ const normalizeAudioSendContentForWhatsApp = createAudioSendContentNormalizer({
 	getLogger: () => state.logger,
 	normalizeBridgeMessageId,
 });
-const normalizeStickerSendContentForWhatsApp = createStickerSendContentNormalizer({
-	getLogger: () => state.logger,
-	normalizeBridgeMessageId,
-	getImageSharp,
-	fetchBuffer: (...args) => utils.requests.fetchPublicBuffer(...args),
-});
+const normalizeStickerSendContentForWhatsApp =
+	createStickerSendContentNormalizer({
+		getLogger: () => state.logger,
+		normalizeBridgeMessageId,
+		getImageSharp,
+		fetchBuffer: (...args) => utils.requests.fetchPublicBuffer(...args),
+	});
 
 const selectPnJid = (list = []) =>
 	list.find(
@@ -2892,28 +2893,28 @@ const connectToWhatsApp = async (retry = 1) => {
 		}
 	}
 
-		const client = createWhatsAppClient({
-			version,
-			printQRInTerminal: false,
-			auth: authState,
-			logger: state.logger,
+	const client = createWhatsAppClient({
+		version,
+		printQRInTerminal: false,
+		auth: authState,
+		logger: state.logger,
 		markOnlineOnConnect: false,
 		syncFullHistory: true,
 		shouldSyncHistoryMessage: () => true,
 		generateHighQualityLinkPreview: true,
 		cachedGroupMetadata: async (jid) =>
 			groupMetadataCache.get(utils.whatsapp.formatJid(jid)),
-			getMessage: async (key) => {
-				const stored = await getStoredMessageWithJidFallback({
-					...key,
-					remoteJid: utils.whatsapp.formatJid(key?.remoteJid),
-				});
-				if (!stored) return null;
+		getMessage: async (key) => {
+			const stored = await getStoredMessageWithJidFallback({
+				...key,
+				remoteJid: utils.whatsapp.formatJid(key?.remoteJid),
+			});
+			if (!stored) return null;
 
-				return stored.message || stored;
-			},
-			browser: ["Firefox (Linux)", "", ""],
-		});
+			return stored.message || stored;
+		},
+		browser: ["Firefox (Linux)", "", ""],
+	});
 	client.contacts = state.contacts;
 	patchSendMessageForLinkPreviews(client);
 	patchSendNodeForNewsletterMessages(client);
@@ -3942,241 +3943,241 @@ const connectToWhatsApp = async (retry = 1) => {
 				);
 			}
 		};
-			const sendTrackedMessage = async (
-				content,
-				sendOptions,
+		const sendTrackedMessage = async (
+			content,
+			sendOptions,
 			{
 				ackContext = "Newsletter send",
 				notifyAckFailure = false,
 				retryWithoutQuotedOnAck = true,
-					forceNewsletterAck = false,
-					watchNewsletterAck = false,
-				} = {},
-			) => {
-				if (newsletterChat) {
+				forceNewsletterAck = false,
+				watchNewsletterAck = false,
+			} = {},
+		) => {
+			if (newsletterChat) {
+				noteNewsletterMessageDebug({
+					discordMessageId: message.id,
+					jid: targetJid,
+					operation: ackContext,
+					phase: "attempt",
+					details: {
+						...summarizeNewsletterContentForDebug(content),
+						hasQuoted: Boolean(sendOptions?.quoted),
+					},
+				});
+				await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
+			}
+			const sentMessage = await sendWithNewsletterQuoteFallback(
+				content,
+				sendOptions,
+			);
+			const outboundId = normalizeBridgeMessageId(sentMessage?.key?.id);
+			const mediaStanzaDebug = newsletterChat
+				? getNewsletterMediaStanzaDebug(outboundId)
+				: null;
+			mapDiscordMessageToWhatsAppMessage({
+				discordMessageId: message.id,
+				sentMessage,
+				isNewsletter: newsletterChat,
+			});
+			if (newsletterChat) {
+				notePendingNewsletterSend({
+					jid: targetJid,
+					discordMessageId: message.id,
+					outboundId: sentMessage?.key?.id,
+					content,
+				});
+			}
+			if (newsletterChat) {
+				if (mediaStanzaDebug) {
 					noteNewsletterMessageDebug({
 						discordMessageId: message.id,
 						jid: targetJid,
 						operation: ackContext,
-						phase: "attempt",
+						phase: "stanza_prepared",
 						details: {
-							...summarizeNewsletterContentForDebug(content),
-							hasQuoted: Boolean(sendOptions?.quoted),
+							...mediaStanzaDebug,
 						},
 					});
-					await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
 				}
-				const sentMessage = await sendWithNewsletterQuoteFallback(
-					content,
-					sendOptions,
+				noteNewsletterMessageDebug({
+					discordMessageId: message.id,
+					jid: targetJid,
+					operation: ackContext,
+					phase: "sent",
+					details: {
+						outboundId,
+						serverId: normalizeBridgeMessageId(
+							getNewsletterServerIdFromMessage(sentMessage),
+						),
+					},
+				});
+			}
+			storeMessage(sentMessage);
+			const shouldTrackNewsletterAck =
+				newsletterChat && (useNewsletterSpecialFlow || forceNewsletterAck);
+			const notifyNewsletterAckFailure = async (ackErrorCode) => {
+				const ackStanzaDebug = getNewsletterMediaStanzaDebug(
+					sentMessage?.key?.id,
 				);
-				const outboundId = normalizeBridgeMessageId(sentMessage?.key?.id);
-				const mediaStanzaDebug = newsletterChat
-					? getNewsletterMediaStanzaDebug(outboundId)
-					: null;
-				mapDiscordMessageToWhatsAppMessage({
+				clearFailedNewsletterMapping({
 					discordMessageId: message.id,
 					sentMessage,
-					isNewsletter: newsletterChat,
 				});
-				if (newsletterChat) {
-					notePendingNewsletterSend({
+				state.logger?.warn?.(
+					{
 						jid: targetJid,
 						discordMessageId: message.id,
 						outboundId: sentMessage?.key?.id,
-						content,
-					});
-				}
-				if (newsletterChat) {
-					if (mediaStanzaDebug) {
-						noteNewsletterMessageDebug({
-							discordMessageId: message.id,
-							jid: targetJid,
-							operation: ackContext,
-							phase: "stanza_prepared",
-							details: {
-								...mediaStanzaDebug,
-							},
-						});
-					}
-					noteNewsletterMessageDebug({
-						discordMessageId: message.id,
-						jid: targetJid,
-						operation: ackContext,
-						phase: "sent",
-						details: {
-							outboundId,
-							serverId: normalizeBridgeMessageId(
-								getNewsletterServerIdFromMessage(sentMessage),
-							),
-						},
-					});
-				}
-				storeMessage(sentMessage);
-				const shouldTrackNewsletterAck =
-					newsletterChat && (useNewsletterSpecialFlow || forceNewsletterAck);
-				const notifyNewsletterAckFailure = async (ackErrorCode) => {
-					const ackStanzaDebug = getNewsletterMediaStanzaDebug(
-						sentMessage?.key?.id,
-					);
-					clearFailedNewsletterMapping({
-						discordMessageId: message.id,
-						sentMessage,
-					});
-					state.logger?.warn?.(
-						{
-							jid: targetJid,
-							discordMessageId: message.id,
-							outboundId: sentMessage?.key?.id,
-							serverId: getNewsletterServerIdFromMessage(sentMessage),
-							error: ackErrorCode,
-							stanza: ackStanzaDebug || undefined,
-						},
-						`${ackContext} was rejected by WhatsApp ack`,
-					);
-					noteNewsletterMessageDebug({
-						discordMessageId: message.id,
-						jid: targetJid,
-						operation: ackContext,
-						phase: "ack_rejected",
-						details: {
-							outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
-							serverId: normalizeBridgeMessageId(
-								getNewsletterServerIdFromMessage(sentMessage),
-							),
-							error: normalizeBridgeMessageId(ackErrorCode),
-							stanza: ackStanzaDebug || undefined,
-						},
-					});
-					if (notifyAckFailure) {
-						await message.channel
-							?.send(
-								`Couldn't send this message to WhatsApp newsletter (ack ${ackErrorCode}).`,
-							)
-							.catch(() => {});
-					}
-				};
-				if (!shouldTrackNewsletterAck) {
-					if (newsletterChat && watchNewsletterAck) {
-						const ackWaitMs = newsletterAckWaitMsForSentMessage(sentMessage);
-						void (async () => {
-							const ackErrorCode = await waitForNewsletterAckError(
-								sentMessage?.key?.id,
-								ackWaitMs,
-							);
-							if (!ackErrorCode) return;
-							await notifyNewsletterAckFailure(ackErrorCode);
-						})();
-					}
-					return { sentMessage, ackErrorCode: null };
-				}
-
-				const ackWaitMs = newsletterAckWaitMsForSentMessage(sentMessage);
-				const ackErrorCode = await waitForNewsletterAckError(
-					sentMessage?.key?.id,
-					ackWaitMs,
+						serverId: getNewsletterServerIdFromMessage(sentMessage),
+						error: ackErrorCode,
+						stanza: ackStanzaDebug || undefined,
+					},
+					`${ackContext} was rejected by WhatsApp ack`,
 				);
-				if (!ackErrorCode) {
-					noteNewsletterMessageDebug({
-						discordMessageId: message.id,
-						jid: targetJid,
-						operation: ackContext,
-						phase: "ack_ok",
-						details: {
-							outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
-							serverId: normalizeBridgeMessageId(
-								getNewsletterServerIdFromMessage(sentMessage),
-							),
-							ackWaitMs,
-						},
-					});
-					return { sentMessage, ackErrorCode: null };
+				noteNewsletterMessageDebug({
+					discordMessageId: message.id,
+					jid: targetJid,
+					operation: ackContext,
+					phase: "ack_rejected",
+					details: {
+						outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
+						serverId: normalizeBridgeMessageId(
+							getNewsletterServerIdFromMessage(sentMessage),
+						),
+						error: normalizeBridgeMessageId(ackErrorCode),
+						stanza: ackStanzaDebug || undefined,
+					},
+				});
+				if (notifyAckFailure) {
+					await message.channel
+						?.send(
+							`Couldn't send this message to WhatsApp newsletter (ack ${ackErrorCode}).`,
+						)
+						.catch(() => {});
 				}
-
-				if (
-					useNewsletterSpecialFlow &&
-					retryWithoutQuotedOnAck &&
-					sendOptions?.quoted
-				) {
-					clearFailedNewsletterMapping({
-						discordMessageId: message.id,
-						sentMessage,
-					});
-					const replyContext = await ensureNewsletterReplyFallbackContext();
-					const retryContent = cloneNewsletterSendContentWithReplyFallback(
-						content,
-						replyContext,
-					);
-					const retryOptions = { ...sendOptions };
-					delete retryOptions.quoted;
-					state.logger?.warn?.(
-						{
-							jid: targetJid,
-							discordMessageId: message.id,
-							outboundId: sentMessage?.key?.id,
-							serverId: getNewsletterServerIdFromMessage(sentMessage),
-							error: ackErrorCode,
-							ackWaitMs,
-						},
-						`${ackContext} was rejected by WhatsApp ack; retrying without quoted context`,
-					);
-					return await sendTrackedMessage(
-						retryContent,
-						Object.keys(retryOptions).length ? retryOptions : undefined,
-						{
-							ackContext,
-							notifyAckFailure,
-							retryWithoutQuotedOnAck: false,
-						},
-					);
-				}
-				await notifyNewsletterAckFailure(ackErrorCode);
-				return { sentMessage, ackErrorCode };
 			};
+			if (!shouldTrackNewsletterAck) {
+				if (newsletterChat && watchNewsletterAck) {
+					const ackWaitMs = newsletterAckWaitMsForSentMessage(sentMessage);
+					void (async () => {
+						const ackErrorCode = await waitForNewsletterAckError(
+							sentMessage?.key?.id,
+							ackWaitMs,
+						);
+						if (!ackErrorCode) return;
+						await notifyNewsletterAckFailure(ackErrorCode);
+					})();
+				}
+				return { sentMessage, ackErrorCode: null };
+			}
 
-			if (state.settings.UploadAttachments && attachmentsToSend.length > 0) {
-				const preparedAttachments = [];
-				for (const file of attachmentsToSend) {
-					const preparedFile = normalizeAttachmentForWhatsAppSend(file);
-					let doc = await normalizeStickerSendContentForWhatsApp({
+			const ackWaitMs = newsletterAckWaitMsForSentMessage(sentMessage);
+			const ackErrorCode = await waitForNewsletterAckError(
+				sentMessage?.key?.id,
+				ackWaitMs,
+			);
+			if (!ackErrorCode) {
+				noteNewsletterMessageDebug({
+					discordMessageId: message.id,
+					jid: targetJid,
+					operation: ackContext,
+					phase: "ack_ok",
+					details: {
+						outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
+						serverId: normalizeBridgeMessageId(
+							getNewsletterServerIdFromMessage(sentMessage),
+						),
+						ackWaitMs,
+					},
+				});
+				return { sentMessage, ackErrorCode: null };
+			}
+
+			if (
+				useNewsletterSpecialFlow &&
+				retryWithoutQuotedOnAck &&
+				sendOptions?.quoted
+			) {
+				clearFailedNewsletterMapping({
+					discordMessageId: message.id,
+					sentMessage,
+				});
+				const replyContext = await ensureNewsletterReplyFallbackContext();
+				const retryContent = cloneNewsletterSendContentWithReplyFallback(
+					content,
+					replyContext,
+				);
+				const retryOptions = { ...sendOptions };
+				delete retryOptions.quoted;
+				state.logger?.warn?.(
+					{
+						jid: targetJid,
+						discordMessageId: message.id,
+						outboundId: sentMessage?.key?.id,
+						serverId: getNewsletterServerIdFromMessage(sentMessage),
+						error: ackErrorCode,
+						ackWaitMs,
+					},
+					`${ackContext} was rejected by WhatsApp ack; retrying without quoted context`,
+				);
+				return await sendTrackedMessage(
+					retryContent,
+					Object.keys(retryOptions).length ? retryOptions : undefined,
+					{
+						ackContext,
+						notifyAckFailure,
+						retryWithoutQuotedOnAck: false,
+					},
+				);
+			}
+			await notifyNewsletterAckFailure(ackErrorCode);
+			return { sentMessage, ackErrorCode };
+		};
+
+		if (state.settings.UploadAttachments && attachmentsToSend.length > 0) {
+			const preparedAttachments = [];
+			for (const file of attachmentsToSend) {
+				const preparedFile = normalizeAttachmentForWhatsAppSend(file);
+				let doc = await normalizeStickerSendContentForWhatsApp({
+					attachment: preparedFile,
+					jid: targetJid,
+					discordMessageId: message?.id,
+				});
+				if (!doc) {
+					doc = utils.whatsapp.createDocumentContent(preparedFile);
+				}
+				if (!doc) continue;
+				if (!doc.sticker) {
+					doc = await normalizeAudioSendContentForWhatsApp({
 						attachment: preparedFile,
+						content: doc,
 						jid: targetJid,
 						discordMessageId: message?.id,
 					});
-					if (!doc) {
-						doc = utils.whatsapp.createDocumentContent(preparedFile);
-					}
-					if (!doc) continue;
-					if (!doc.sticker) {
-						doc = await normalizeAudioSendContentForWhatsApp({
-							attachment: preparedFile,
-							content: doc,
-							jid: targetJid,
-							discordMessageId: message?.id,
-						});
-						doc = await normalizeRegularImageSendContentForWhatsApp({
-							attachment: preparedFile,
-							content: doc,
-							jid: targetJid,
-							discordMessageId: message?.id,
-						});
-						doc = await ensureImageThumbForWhatsAppSend({
-							content: doc,
-							jid: targetJid,
-							discordMessageId: message?.id,
-						});
-						if (newsletterChat) {
-							doc = await normalizeNewsletterImageSendContent({
-								content: doc,
-								jid: targetJid,
-								discordMessageId: message?.id,
-							});
-						}
-					}
-					preparedAttachments.push({
+					doc = await normalizeRegularImageSendContentForWhatsApp({
 						attachment: preparedFile,
 						content: doc,
+						jid: targetJid,
+						discordMessageId: message?.id,
 					});
+					doc = await ensureImageThumbForWhatsAppSend({
+						content: doc,
+						jid: targetJid,
+						discordMessageId: message?.id,
+					});
+					if (newsletterChat) {
+						doc = await normalizeNewsletterImageSendContent({
+							content: doc,
+							jid: targetJid,
+							discordMessageId: message?.id,
+						});
+					}
+				}
+				preparedAttachments.push({
+					attachment: preparedFile,
+					content: doc,
+				});
 			}
 
 			const attachmentCaptionText = await buildAttachmentCaptionText({
@@ -4190,14 +4191,14 @@ const connectToWhatsApp = async (retry = 1) => {
 				prependReplyFallbackContext,
 			});
 
-			const albumEligibleAttachments = preparedAttachments.filter(({ content }) =>
-				Boolean(getAlbumEligibleMediaKind(content)),
+			const albumEligibleAttachments = preparedAttachments.filter(
+				({ content }) => Boolean(getAlbumEligibleMediaKind(content)),
 			);
-				const canUseMediaAlbum =
-					!newsletterChat &&
-					!isBroadcastJid(targetJid) &&
-					preparedAttachments.length >= 2 &&
-					albumEligibleAttachments.length === preparedAttachments.length;
+			const canUseMediaAlbum =
+				!newsletterChat &&
+				!isBroadcastJid(targetJid) &&
+				preparedAttachments.length >= 2 &&
+				albumEligibleAttachments.length === preparedAttachments.length;
 			if (canUseMediaAlbum) {
 				let sentAnyAlbum = false;
 				for (const [batchIndex, batch] of chunkList(
@@ -4248,58 +4249,57 @@ const connectToWhatsApp = async (retry = 1) => {
 					}
 					sentAnyAlbum = true;
 				}
-					if (sentAnyAlbum) {
-						return;
+				if (sentAnyAlbum) {
+					return;
+				}
+			}
+
+			const firstPreparedContent = preparedAttachments[0]?.content || null;
+			const firstAttachmentIsSticker = Boolean(firstPreparedContent?.sticker);
+			const sentStandaloneStickerText =
+				firstAttachmentIsSticker && Boolean(attachmentCaptionText);
+			if (sentStandaloneStickerText) {
+				const standaloneTextPayload = { text: attachmentCaptionText };
+				if (!newsletterChat && mentionJids.length) {
+					standaloneTextPayload.mentions = mentionJids;
+				}
+				await sendTrackedMessage(standaloneTextPayload, options, {
+					ackContext: "Sticker companion text send",
+					forceNewsletterAck: newsletterChat,
+				});
+			}
+
+			let first = true;
+			let sentAnyAttachment = false;
+			let attemptedAttachmentSends = 0;
+			for (const {
+				attachment: preparedFile,
+				content: doc,
+			} of preparedAttachments) {
+				attemptedAttachmentSends += 1;
+				if (first) {
+					if (
+						!sentStandaloneStickerText &&
+						(attachmentCaptionText || mentionJids.length)
+					) {
+						doc.caption = attachmentCaptionText;
+					}
+					if (
+						!sentStandaloneStickerText &&
+						!newsletterChat &&
+						mentionJids.length
+					) {
+						doc.mentions = mentionJids;
 					}
 				}
-
-				const firstPreparedContent = preparedAttachments[0]?.content || null;
-				const firstAttachmentIsSticker = Boolean(firstPreparedContent?.sticker);
-				const sentStandaloneStickerText =
-					firstAttachmentIsSticker && Boolean(attachmentCaptionText);
-				if (sentStandaloneStickerText) {
-					const standaloneTextPayload = { text: attachmentCaptionText };
-					if (!newsletterChat && mentionJids.length) {
-						standaloneTextPayload.mentions = mentionJids;
-					}
-					await sendTrackedMessage(
-						standaloneTextPayload,
-						options,
+				try {
+					const { ackErrorCode } = await sendTrackedMessage(
+						doc,
+						first && !sentStandaloneStickerText ? options : undefined,
 						{
-							ackContext: "Sticker companion text send",
+							ackContext: "Newsletter attachment send",
 							forceNewsletterAck: newsletterChat,
 						},
-					);
-				}
-
-				let first = true;
-				let sentAnyAttachment = false;
-				let attemptedAttachmentSends = 0;
-				for (const { attachment: preparedFile, content: doc } of preparedAttachments) {
-					attemptedAttachmentSends += 1;
-					if (first) {
-						if (
-							!sentStandaloneStickerText &&
-							(attachmentCaptionText || mentionJids.length)
-						) {
-							doc.caption = attachmentCaptionText;
-						}
-						if (
-							!sentStandaloneStickerText &&
-							!newsletterChat &&
-							mentionJids.length
-						) {
-							doc.mentions = mentionJids;
-						}
-					}
-					try {
-						const { ackErrorCode } = await sendTrackedMessage(
-							doc,
-							first && !sentStandaloneStickerText ? options : undefined,
-							{
-								ackContext: "Newsletter attachment send",
-								forceNewsletterAck: newsletterChat,
-							},
 					);
 					if (!ackErrorCode) {
 						sentAnyAttachment = true;

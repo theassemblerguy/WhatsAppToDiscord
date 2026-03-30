@@ -15,10 +15,10 @@ import {
 import messageStore from "../src/messageStore.js";
 import { resetNewsletterBridgeState } from "../src/newsletterBridge.js";
 import state from "../src/state.js";
-import storage from "../src/storage.js";
 import utils from "../src/utils.js";
+import initIsolatedStorage from "./helpers/initIsolatedStorage.js";
 
-await storage.ensureInitialized();
+await initIsolatedStorage(import.meta.url);
 
 const snapshotObject = (value) => ({ ...value });
 const restoreObject = (target, snapshot) => {
@@ -1818,7 +1818,10 @@ test("Multiple Discord image attachments are sent to WhatsApp as a media album",
 	try {
 		const sharpMod = await import("sharp");
 		const sharp = sharpMod?.default || sharpMod;
-		harness.fakeClient.waUploadToServer = async (_filePath, uploadOptions = {}) => {
+		harness.fakeClient.waUploadToServer = async (
+			_filePath,
+			uploadOptions = {},
+		) => {
 			const mediaType = uploadOptions.mediaType || "image";
 			return {
 				mediaUrl: `https://mmg.whatsapp.net/${mediaType}/${Date.now()}`,

@@ -1843,10 +1843,7 @@ const updater = {
 			);
 			await fs.promises.mkdir(path.dirname(runtimePath), { recursive: true });
 			await fs.promises.rm(runtimePath, { recursive: true, force: true });
-			await movePathWithCrossDeviceFallback(
-				extractedRuntimePath,
-				runtimePath,
-			);
+			await movePathWithCrossDeviceFallback(extractedRuntimePath, runtimePath);
 		} finally {
 			await fs.promises.rm(tempRoot, { recursive: true, force: true });
 		}
@@ -2556,14 +2553,14 @@ const discord = {
 		}
 		const url =
 			explicitUrl || `https://cdn.discordapp.com/stickers/${id}.${extension}`;
-			return {
-				url,
-				name: `${sanitizeFileName(sticker?.name || "sticker", "sticker")}-${id}.${extension}`,
-				contentType: extensionToMime(extension),
-				isSticker: true,
-				discordStickerFormat: format || null,
-			};
-		},
+		return {
+			url,
+			name: `${sanitizeFileName(sticker?.name || "sticker", "sticker")}-${id}.${extension}`,
+			contentType: extensionToMime(extension),
+			isSticker: true,
+			discordStickerFormat: format || null,
+		};
+	},
 	collectStickerAttachments(message) {
 		const stickers = message?.stickers;
 		if (!stickers?.size) return [];

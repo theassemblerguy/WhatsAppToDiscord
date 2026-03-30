@@ -1,6 +1,6 @@
 import fs from "node:fs";
-import path from "node:path";
 import { createRequire } from "node:module";
+import path from "node:path";
 
 const require = createRequire(path.resolve(process.cwd(), "package.json"));
 
@@ -177,7 +177,10 @@ const buildLottieAnimationRenderer = async (animationData) => {
 }`}; function ImagePreloaderFactory() {`,
 	);
 	const { Canvas, createCanvas, loadImage } = canvasMod;
-	const width = Math.max(1, Number(animationData?.w) || DISCORD_STICKER_TARGET_SIZE);
+	const width = Math.max(
+		1,
+		Number(animationData?.w) || DISCORD_STICKER_TARGET_SIZE,
+	);
 	const height = Math.max(
 		1,
 		Number(animationData?.h) || DISCORD_STICKER_TARGET_SIZE,
@@ -204,13 +207,7 @@ const Image = Canvas.Image;`}
 ${patchedSource}
 return window.lottie;`,
 	);
-	bootstrapLottie(
-		window,
-		document,
-		window.navigator,
-		Canvas,
-		loadImage,
-	);
+	bootstrapLottie(window, document, window.navigator, Canvas, loadImage);
 	if (typeof window?.lottie?.loadAnimation !== "function") {
 		window.close?.();
 		throw new Error("lottie_player_unavailable");
@@ -249,11 +246,15 @@ const renderLottieStickerFrameBuffers = async (animationData) => {
 	try {
 		const totalFrames = Math.max(
 			1,
-			Math.round(Number(animation?.totalFrames) || Number(animationData?.op) || 1),
+			Math.round(
+				Number(animation?.totalFrames) || Number(animationData?.op) || 1,
+			),
 		);
 		const sourceFrameRate = Math.max(
 			1,
-			Math.round(Number(animation?.frameRate) || Number(animationData?.fr) || 1),
+			Math.round(
+				Number(animation?.frameRate) || Number(animationData?.fr) || 1,
+			),
 		);
 		const targetFrameRate = Math.max(
 			1,
@@ -423,7 +424,8 @@ export const createStickerSendContentNormalizer = ({
 		try {
 			if (isLottieStickerAttachment(attachment, normalizedMime)) {
 				const animationData = JSON.parse(sourceBuffer.toString("utf8"));
-				const renderedFrames = await renderLottieStickerFrameBuffers(animationData);
+				const renderedFrames =
+					await renderLottieStickerFrameBuffers(animationData);
 				if (!renderedFrames?.frameBuffers?.length) {
 					if (!lottieDependencyMissingLogged) {
 						lottieDependencyMissingLogged = true;
