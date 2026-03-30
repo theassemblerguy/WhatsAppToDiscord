@@ -53,5 +53,5 @@ class GroupMetadataCache {
 
 const groupMetadataCache = new GroupMetadataCache();
 
-export { GroupMetadataCache, GROUP_METADATA_TTL_MS };
+export { GROUP_METADATA_TTL_MS, GroupMetadataCache };
 export default groupMetadataCache;

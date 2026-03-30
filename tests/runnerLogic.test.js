@@ -15,6 +15,7 @@ import {
 	parseRestartFlagPayload,
 	resolveRollbackBackupCandidates,
 	revertExecutableToBackupSync,
+	revertPackagedArtifactsToBackupSync,
 } from "../src/runnerLogic.js";
 
 test("computeBackoffDelayMs doubles per attempt", () => {
@@ -360,6 +361,86 @@ test("revertExecutableToBackupSync reports rename failures", () => {
 
 	assert.equal(result.success, false);
 	assert.equal(result.reason, "rename-failed");
+});
+
+test("revertPackagedArtifactsToBackupSync restores runtime sidecar alongside executable", () => {
+	const pathModule = path.posix;
+	const execPath = "/opt/bin/WA2DC";
+	const runtimePath = pathModule.join(pathModule.dirname(execPath), "runtime");
+	const expectedBackup = `${execPath}.oldVersion`;
+	const runtimeBackup = `${runtimePath}.oldVersion`;
+	const calls = [];
+	const fakeFs = {
+		existsSync(value) {
+			return value === expectedBackup || value === runtimeBackup;
+		},
+		rmSync(target, options) {
+			calls.push(["rmSync", target, options]);
+		},
+		renameSync(from, to) {
+			calls.push(["renameSync", from, to]);
+		},
+	};
+
+	const result = revertPackagedArtifactsToBackupSync({
+		currentExeName: "WA2DC",
+		execPath,
+		cwd: "/tmp/app",
+		fsModule: fakeFs,
+		pathModule,
+	});
+
+	assert.equal(result.success, true);
+	assert.equal(result.backupPath, expectedBackup);
+	assert.equal(result.currentPath, execPath);
+	assert.equal(result.runtimeBackupPath, runtimeBackup);
+	assert.equal(result.runtimePath, runtimePath);
+	assert.deepEqual(calls, [
+		["rmSync", execPath, { force: true }],
+		["renameSync", expectedBackup, execPath],
+		["rmSync", runtimePath, { recursive: true, force: true }],
+		["renameSync", runtimeBackup, runtimePath],
+	]);
+});
+
+test("revertPackagedArtifactsToBackupSync restores packaged artifacts with win32 paths", () => {
+	const pathModule = path.win32;
+	const execPath = "D:\\app\\WA2DC.exe";
+	const runtimePath = pathModule.join(pathModule.dirname(execPath), "runtime");
+	const expectedBackup = `${execPath}.oldVersion`;
+	const runtimeBackup = `${runtimePath}.oldVersion`;
+	const calls = [];
+	const fakeFs = {
+		existsSync(value) {
+			return value === expectedBackup || value === runtimeBackup;
+		},
+		rmSync(target, options) {
+			calls.push(["rmSync", target, options]);
+		},
+		renameSync(from, to) {
+			calls.push(["renameSync", from, to]);
+		},
+	};
+
+	const result = revertPackagedArtifactsToBackupSync({
+		currentExeName: "WA2DC.exe",
+		execPath,
+		cwd: "D:\\app",
+		fsModule: fakeFs,
+		pathModule,
+	});
+
+	assert.equal(result.success, true);
+	assert.equal(result.backupPath, expectedBackup);
+	assert.equal(result.currentPath, execPath);
+	assert.equal(result.runtimeBackupPath, runtimeBackup);
+	assert.equal(result.runtimePath, runtimePath);
+	assert.deepEqual(calls, [
+		["rmSync", execPath, { force: true }],
+		["renameSync", expectedBackup, execPath],
+		["rmSync", runtimePath, { recursive: true, force: true }],
+		["renameSync", runtimeBackup, runtimePath],
+	]);
 });
 
 test("evaluateUpdateValidationExit reaches rollback threshold on second crash", () => {

@@ -68,7 +68,7 @@ Please don't get worried about the number of steps listed here. We wanted to be 
 1. You are good to go! Now, you can explore [Commands](commands.md) to learn how to start conversations.
 
 # Linux/MacOS/Non-Windows Users
-Because this has been requested a lot, I'm going to type it here in the form of a rant. There's no non-windows specific steps. You may download the binary and run it in your terminal by running `chmod +x WA2DC-Linux` followed by `./WA2DC-Linux` (or whatever your file's name is). There's no difference between platforms. As you may notice, the question is actually about how to run any executable in Linux/MacOS, and not about this project. Also for those trying to run this on a server, you may try searching the following questions on Google:
+Because this has been requested a lot, I'm going to type it here in the form of a rant. There's no non-windows specific steps. You may download the binary and run it in your terminal by running `chmod +x WA2DC-Linux` followed by `./WA2DC-Linux` (or whatever your file's name is). Keep the bundled `runtime/` folder beside the executable if the release includes one. There's no difference between platforms. As you may notice, the question is actually about how to run any executable in Linux/MacOS, and not about this project. Also for those trying to run this on a server, you may try searching the following questions on Google:
 - How to download a file using `wget` or `curl`?
 - How to run an executable in Linux/MacOS?
 - How to run an executable in the background in Linux/MacOS?

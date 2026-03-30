@@ -1,18 +1,25 @@
 import {
 	DisconnectReason,
+	generateWAMessageFromContent,
 	getAggregateVotesInPollMessage,
+	prepareWAMessageMedia,
 	proto,
 	updateMessageWithPollUpdate,
 	WAMessageStatus,
 	WAMessageStubType,
 } from "@whiskeysockets/baileys";
-import { getKeyAuthor } from "@whiskeysockets/baileys/lib/Utils/generics.js";
+import {
+	generateMessageIDV2,
+	getKeyAuthor,
+} from "@whiskeysockets/baileys/lib/Utils/generics.js";
 import { decryptPollVote } from "@whiskeysockets/baileys/lib/Utils/process-message.js";
 import useSQLiteAuthState from "./auth/sqliteAuthState.js";
 import { createWhatsAppClient, getBaileysVersion } from "./clientFactories.js";
 import groupMetadataCache from "./groupMetadataCache.js";
 import { createGroupRefreshScheduler } from "./groupMetadataRefresh.js";
+import { getImageJimp, getImageSharp } from "./imageLibs.js";
 import { createAudioSendContentNormalizer } from "./internal/audioSendNormalization.js";
+import { createStickerSendContentNormalizer } from "./internal/stickerSendNormalization.js";
 import messageStore from "./messageStore.js";
 import {
 	clearPendingNewsletterSends,
@@ -126,7 +133,12 @@ const toBuffer = (val) => {
 const normalizeAudioSendContentForWhatsApp = createAudioSendContentNormalizer({
 	getLogger: () => state.logger,
 	normalizeBridgeMessageId,
-	toBuffer,
+});
+const normalizeStickerSendContentForWhatsApp = createStickerSendContentNormalizer({
+	getLogger: () => state.logger,
+	normalizeBridgeMessageId,
+	getImageSharp,
+	fetchBuffer: (...args) => utils.requests.fetchPublicBuffer(...args),
 });
 
 const selectPnJid = (list = []) =>
@@ -200,9 +212,26 @@ const NEWSLETTER_MEDIA_STANZA_DEBUG_ENABLED =
 	process.env.WA2DC_NEWSLETTER_MEDIA_DEBUG !== "0";
 const NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES = 25 * 1024 * 1024;
 const NEWSLETTER_IMAGE_JPEG_MIME_TYPES = new Set(["image/jpeg", "image/jpg"]);
+const WHATSAPP_MEDIA_ALBUM_MAX_ITEMS = 10;
+const WHATSAPP_OUTBOUND_JPEG_THUMB_WIDTH = 192;
+const WHATSAPP_OUTBOUND_JPEG_THUMB_QUALITY = 50;
+const WHATSAPP_SAFE_IMAGE_MIME_TYPES = new Set([
+	"image/jpeg",
+	"image/jpg",
+	"image/png",
+]);
+const WHATSAPP_PRESERVE_SOURCE_IMAGE_MIME_TYPES = new Set(["image/gif"]);
+const WHATSAPP_PREFER_PNG_NORMALIZATION_MIME_TYPES = new Set([
+	"image/png",
+	"image/webp",
+	"image/avif",
+	"image/heic",
+	"image/heif",
+	"image/bmp",
+	"image/tiff",
+]);
 const newsletterLiveUpdatesExpiresAt = new Map();
 const newsletterMediaStanzaDebug = new Map();
-let newsletterImageJimpPromise = null;
 const DISCORD_ATTACHMENT_MIME_BY_EXTENSION = {
 	gif: "image/gif",
 	jpg: "image/jpeg",
@@ -601,6 +630,9 @@ const normalizeAttachmentForWhatsAppSend = (attachment = {}) => {
 
 const isNewsletterSupportedMediaAttachment = (attachment = {}) => {
 	const normalized = normalizeAttachmentForWhatsAppSend(attachment);
+	if (normalized?.isSticker) {
+		return false;
+	}
 	const mimetype = normalizeMimeType(normalized.contentType);
 	const majorType = mimetype.split("/")[0];
 	return majorType === "image" || majorType === "video";
@@ -618,16 +650,7 @@ const isNewsletterImageContent = (content = {}) => {
 	return mimetype.startsWith("image/");
 };
 
-const getNewsletterImageJimp = async () => {
-	if (!newsletterImageJimpPromise) {
-		newsletterImageJimpPromise = import("jimp")
-			.then((mod) => (typeof mod?.Jimp?.read === "function" ? mod : null))
-			.catch(() => null);
-	}
-	return newsletterImageJimpPromise;
-};
-
-const loadNewsletterImageBuffer = async (source = null) => {
+const loadImageBufferForNormalization = async (source = null) => {
 	if (Buffer.isBuffer(source)) {
 		return source;
 	}
@@ -657,25 +680,453 @@ const loadNewsletterImageBuffer = async (source = null) => {
 	if (!/^https?:\/\//i.test(sourceUrl)) {
 		return null;
 	}
-	const response = await fetch(sourceUrl);
-	if (!response.ok) {
-		throw new Error(`HTTP ${response.status}`);
+	const result = await utils.requests.fetchPublicBuffer(sourceUrl, {
+		maxBytes: NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES,
+		accept: "image/*,*/*;q=0.8",
+	});
+	return result?.buffer || null;
+};
+
+const buildDocumentFallbackContent = ({
+	attachment,
+	content,
+	sourceMime = "",
+	documentSource = null,
+} = {}) => {
+	const fallbackSource = documentSource || content?.image || content?.document;
+	if (!fallbackSource) {
+		return content;
 	}
-	const contentLength = Number.parseInt(
-		response.headers.get("content-length") || "",
-		10,
-	);
+	return {
+		document: fallbackSource,
+		mimetype:
+			sourceMime ||
+			normalizeMimeType(content?.mimetype) ||
+			"application/octet-stream",
+		fileName:
+			attachment?.name ||
+			(typeof content?.fileName === "string" && content.fileName.trim()
+				? content.fileName.trim()
+				: "attachment"),
+	};
+};
+
+const chooseNormalizedStaticImageMimeType = ({
+	sourceMime = "",
+	hasAlpha = false,
+} = {}) =>
+	hasAlpha || WHATSAPP_PREFER_PNG_NORMALIZATION_MIME_TYPES.has(sourceMime)
+		? "image/png"
+		: "image/jpeg";
+
+const buildNormalizedImageContent = ({
+	content,
+	outboundBuffer,
+	outboundMime,
+	width = null,
+	height = null,
+} = {}) => {
+	const normalizedContent = {
+		...content,
+		image: outboundBuffer,
+		mimetype: outboundMime,
+	};
+	if (width) {
+		normalizedContent.width = width;
+	} else {
+		delete normalizedContent.width;
+	}
+	if (height) {
+		normalizedContent.height = height;
+	} else {
+		delete normalizedContent.height;
+	}
+	return normalizedContent;
+};
+
+const normalizeImageBufferWithSharp = async ({
+	sourceBuffer,
+	sourceMime,
+} = {}) => {
+	const sharp = await getImageSharp();
+	if (!sharp) {
+		return null;
+	}
+	const image = sharp(sourceBuffer, { animated: true });
+	const metadata = await image.metadata();
+	const width = toIntegerOrNull(metadata?.width);
+	const height = toIntegerOrNull(metadata?.height);
+	const frameCount = toIntegerOrNull(metadata?.pages) || 1;
+	if (frameCount > 1) {
+		return {
+			decoder: "sharp",
+			animated: true,
+			width,
+			height,
+		};
+	}
+	const outboundMime = chooseNormalizedStaticImageMimeType({
+		sourceMime,
+		hasAlpha: metadata?.hasAlpha === true,
+	});
+	const outboundBuffer =
+		outboundMime === "image/jpeg"
+			? await image.rotate().jpeg({ quality: 82 }).toBuffer()
+			: await image.rotate().png().toBuffer();
+	return {
+		decoder: "sharp",
+		animated: false,
+		outboundBuffer,
+		outboundMime,
+		width,
+		height,
+	};
+};
+
+const normalizeImageBufferWithJimp = async ({
+	sourceBuffer,
+	sourceMime,
+} = {}) => {
+	const jimp = await getImageJimp();
+	if (!jimp) {
+		return null;
+	}
+	const image = await jimp.Jimp.read(sourceBuffer);
+	const width = toIntegerOrNull(image?.bitmap?.width);
+	const height = toIntegerOrNull(image?.bitmap?.height);
+	const outboundMime = chooseNormalizedStaticImageMimeType({
+		sourceMime,
+	});
+	const outboundBuffer =
+		outboundMime === "image/jpeg"
+			? await image.getBuffer("image/jpeg", { quality: 82 })
+			: await image.getBuffer("image/png");
+	return {
+		decoder: "jimp",
+		animated: false,
+		outboundBuffer,
+		outboundMime,
+		width,
+		height,
+	};
+};
+
+const readImageDimensionsWithSharp = async ({ sourceBuffer } = {}) => {
+	const sharp = await getImageSharp();
+	if (!sharp) {
+		return null;
+	}
+	const metadata = await sharp(sourceBuffer, { animated: true }).metadata();
+	return {
+		decoder: "sharp",
+		width: toIntegerOrNull(metadata?.width),
+		height: toIntegerOrNull(metadata?.height),
+	};
+};
+
+const readImageDimensionsWithJimp = async ({ sourceBuffer } = {}) => {
+	const jimp = await getImageJimp();
+	if (!jimp) {
+		return null;
+	}
+	const image = await jimp.Jimp.read(sourceBuffer);
+	return {
+		decoder: "jimp",
+		width: toIntegerOrNull(image?.bitmap?.width),
+		height: toIntegerOrNull(image?.bitmap?.height),
+	};
+};
+
+const buildJpegThumbnailWithSharp = async ({ sourceBuffer } = {}) => {
+	const sharp = await getImageSharp();
+	if (!sharp) {
+		return null;
+	}
+	const image = sharp(sourceBuffer, { animated: true });
+	const metadata = await image.metadata();
+	return {
+		decoder: "sharp",
+		jpegThumbnail: await image
+			.resize({
+				width: WHATSAPP_OUTBOUND_JPEG_THUMB_WIDTH,
+				fit: "inside",
+				withoutEnlargement: true,
+			})
+			.jpeg({ quality: WHATSAPP_OUTBOUND_JPEG_THUMB_QUALITY })
+			.toBuffer(),
+		width: toIntegerOrNull(metadata?.width),
+		height: toIntegerOrNull(metadata?.height),
+	};
+};
+
+const buildJpegThumbnailWithJimp = async ({ sourceBuffer } = {}) => {
+	const jimp = await getImageJimp();
+	if (!jimp) {
+		return null;
+	}
+	const image = await jimp.Jimp.read(sourceBuffer);
+	return {
+		decoder: "jimp",
+		jpegThumbnail: await image
+			.resize({
+				w: WHATSAPP_OUTBOUND_JPEG_THUMB_WIDTH,
+				mode: jimp.ResizeStrategy.BILINEAR,
+			})
+			.getBuffer("image/jpeg", {
+				quality: WHATSAPP_OUTBOUND_JPEG_THUMB_QUALITY,
+			}),
+		width: toIntegerOrNull(image?.bitmap?.width),
+		height: toIntegerOrNull(image?.bitmap?.height),
+	};
+};
+
+const ensureImageThumbForWhatsAppSend = async ({
+	content,
+	jid,
+	discordMessageId,
+} = {}) => {
+	if (isNewsletterJid(jid) || !content?.image || content?.jpegThumbnail) {
+		return content;
+	}
+	const normalizedSourceMime = normalizeMimeType(content?.mimetype);
+	if (normalizedSourceMime && !normalizedSourceMime.startsWith("image/")) {
+		return content;
+	}
+	try {
+		const sourceBuffer = await loadImageBufferForNormalization(content?.image);
+		if (!sourceBuffer?.length) {
+			return content;
+		}
+		for (const buildThumbnail of [
+			buildJpegThumbnailWithSharp,
+			buildJpegThumbnailWithJimp,
+		]) {
+			try {
+				const thumbnailResult = await buildThumbnail({ sourceBuffer });
+				if (!thumbnailResult?.jpegThumbnail?.length) {
+					continue;
+				}
+				return {
+					...content,
+					jpegThumbnail: thumbnailResult.jpegThumbnail,
+					width: content.width || thumbnailResult.width || undefined,
+					height: content.height || thumbnailResult.height || undefined,
+				};
+			} catch (err) {
+				state.logger?.debug?.(
+					{
+						err,
+						jid,
+						discordMessageId: normalizeBridgeMessageId(discordMessageId),
+						sourceMime: normalizedSourceMime || null,
+					},
+					"Failed to generate outbound WhatsApp image thumbnail",
+				);
+			}
+		}
+	} catch (err) {
+		state.logger?.debug?.(
+			{
+				err,
+				jid,
+				discordMessageId: normalizeBridgeMessageId(discordMessageId),
+				sourceMime: normalizedSourceMime || null,
+			},
+			"Failed to load outbound Discord image while preparing WhatsApp thumbnail",
+		);
+	}
+	return content;
+};
+
+const getAlbumEligibleMediaKind = (content = {}) => {
+	if (content?.image && !content?.document && !content?.audio) {
+		return "image";
+	}
+	if (content?.video && !content?.document && !content?.audio) {
+		return "video";
+	}
+	return "";
+};
+
+const buildAttachmentCaptionText = ({
+	text,
+	hasOnlyCustomEmoji,
+	isForwardedFromDiscord,
+	useNewsletterSpecialFlow,
+	hasReplyReference,
+	options,
+	ensureNewsletterReplyFallbackContext,
+	prependReplyFallbackContext,
+} = {}) => {
+	let captionText = hasOnlyCustomEmoji ? "" : text;
+	if (isForwardedFromDiscord) {
+		captionText = captionText ? `Forwarded\n${captionText}` : "Forwarded";
+	}
+	if (useNewsletterSpecialFlow && hasReplyReference && !options?.quoted) {
+		return ensureNewsletterReplyFallbackContext().then((replyContext) =>
+			prependReplyFallbackContext(captionText, replyContext),
+		);
+	}
+	return Promise.resolve(captionText);
+};
+
+const buildAlbumRelayOptions = ({ client, jid, messageId } = {}) => {
 	if (
-		Number.isFinite(contentLength) &&
-		contentLength > NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES
+		!client ||
+		typeof client.relayMessage !== "function" ||
+		typeof client.waUploadToServer !== "function"
 	) {
-		throw new Error(`content_length_exceeded:${contentLength}`);
+		return null;
 	}
-	const buffer = Buffer.from(await response.arrayBuffer());
-	if (buffer.length > NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES) {
-		throw new Error(`buffer_length_exceeded:${buffer.length}`);
+	const userJid =
+		client.user?.id ||
+		authState?.creds?.me?.id ||
+		state.waClient?.user?.id ||
+		null;
+	if (!userJid) {
+		return null;
 	}
-	return buffer;
+	return {
+		jid,
+		userJid,
+		messageId,
+		logger: state.logger,
+		upload: client.waUploadToServer,
+		options: undefined,
+	};
+};
+
+const sendMediaAlbumToWhatsApp = async ({
+	client,
+	jid,
+	discordMessageId,
+	contents,
+	captionText = "",
+	mentionJids = [],
+	quoted = null,
+} = {}) => {
+	const relayBaseOptions = buildAlbumRelayOptions({
+		client,
+		jid,
+		messageId: discordMessageId,
+	});
+	if (!relayBaseOptions || !Array.isArray(contents) || contents.length < 2) {
+		return null;
+	}
+
+	let startedRelay = false;
+	let sentChildren = 0;
+	try {
+		const preparedMedia = [];
+		for (const content of contents) {
+			const mediaKind = getAlbumEligibleMediaKind(content);
+			if (!mediaKind) {
+				return null;
+			}
+			const prepared = await prepareWAMessageMedia(content, relayBaseOptions);
+			const messageType =
+				mediaKind === "image" ? "imageMessage" : "videoMessage";
+			const payload = prepared?.[messageType];
+			if (!payload) {
+				return null;
+			}
+			preparedMedia.push({ messageType, payload: { ...payload } });
+		}
+
+		const parentMessage = generateWAMessageFromContent(
+			jid,
+			proto.Message.fromObject({
+				albumMessage: {
+					expectedImageCount: preparedMedia.filter(
+						(entry) => entry.messageType === "imageMessage",
+					).length,
+					expectedVideoCount: preparedMedia.filter(
+						(entry) => entry.messageType === "videoMessage",
+					).length,
+				},
+			}),
+			{
+				userJid: relayBaseOptions.userJid,
+				messageId: generateMessageIDV2(relayBaseOptions.userJid),
+			},
+		);
+
+		await client.relayMessage(jid, parentMessage.message, {
+			messageId: parentMessage.key.id,
+		});
+		startedRelay = true;
+		mapDiscordMessageToWhatsAppMessage({
+			discordMessageId,
+			sentMessage: parentMessage,
+			isNewsletter: false,
+		});
+		storeMessage(parentMessage);
+
+		for (const [index, entry] of preparedMedia.entries()) {
+			const payload = {
+				...entry.payload,
+				contextInfo: { ...(entry.payload.contextInfo || {}) },
+			};
+			if (index === 0) {
+				if (captionText) {
+					payload.caption = captionText;
+				}
+				if (mentionJids.length) {
+					payload.contextInfo.mentionedJid = mentionJids;
+				}
+			}
+			const childMessage = generateWAMessageFromContent(
+				jid,
+				proto.Message.fromObject({
+					[entry.messageType]: payload,
+					messageContextInfo: {
+						messageAssociation: {
+							associationType:
+								proto.MessageAssociation.AssociationType.MEDIA_ALBUM,
+							parentMessageKey: parentMessage.key,
+							messageIndex: index,
+						},
+					},
+				}),
+				{
+					userJid: relayBaseOptions.userJid,
+					messageId: generateMessageIDV2(relayBaseOptions.userJid),
+					quoted: index === 0 ? quoted : undefined,
+				},
+			);
+			await client.relayMessage(jid, childMessage.message, {
+				messageId: childMessage.key.id,
+			});
+			storeMessage(childMessage);
+			const childId = normalizeBridgeMessageId(childMessage?.key?.id);
+			if (childId) {
+				state.lastMessages[childId] = discordMessageId;
+				state.sentMessages.add(childId);
+			}
+			sentChildren += 1;
+		}
+
+		return {
+			parentMessage,
+			sentChildren,
+			startedRelay: true,
+		};
+	} catch (err) {
+		return {
+			error: err,
+			sentChildren,
+			startedRelay,
+		};
+	}
+};
+
+const chunkList = (list = [], size = 1) => {
+	const chunkSize = Number.isInteger(size) && size > 0 ? size : 1;
+	const chunks = [];
+	for (let index = 0; index < list.length; index += chunkSize) {
+		chunks.push(list.slice(index, index + chunkSize));
+	}
+	return chunks;
 };
 
 const normalizeNewsletterImageSendContent = async ({
@@ -690,7 +1141,7 @@ const normalizeNewsletterImageSendContent = async ({
 	const shouldForceJpeg =
 		!NEWSLETTER_IMAGE_JPEG_MIME_TYPES.has(normalizedSourceMime);
 	try {
-		const sourceBuffer = await loadNewsletterImageBuffer(content?.image);
+		const sourceBuffer = await loadImageBufferForNormalization(content?.image);
 		if (!sourceBuffer?.length) {
 			return content;
 		}
@@ -699,38 +1150,74 @@ const normalizeNewsletterImageSendContent = async ({
 			normalizedSourceMime || content?.mimetype || "image/jpeg";
 		let width = null;
 		let height = null;
+		let lastNormalizationError = null;
 
-		const jimp = await getNewsletterImageJimp();
-		if (jimp) {
-			try {
-				const image = await jimp.Jimp.read(sourceBuffer);
-				width = toIntegerOrNull(image?.bitmap?.width);
-				height = toIntegerOrNull(image?.bitmap?.height);
-				if (shouldForceJpeg) {
-					const jpegBuffer = await image.getBuffer("image/jpeg", {
-						quality: 82,
+		if (shouldForceJpeg) {
+			for (const normalizeBuffer of [
+				normalizeImageBufferWithSharp,
+				normalizeImageBufferWithJimp,
+			]) {
+				try {
+					const normalizedResult = await normalizeBuffer({
+						sourceBuffer,
+						sourceMime: "image/jpeg",
 					});
-					if (jpegBuffer?.length) {
-						outboundBuffer = jpegBuffer;
-						outboundMime = "image/jpeg";
+					if (!normalizedResult?.outboundBuffer?.length) {
+						continue;
 					}
-				}
-			} catch (err) {
-				if (shouldForceJpeg) {
-					state.logger?.debug?.(
-						{
-							err,
-							jid,
-							discordMessageId: normalizeBridgeMessageId(discordMessageId),
-							sourceMime: normalizedSourceMime || null,
-						},
-						"Failed to decode newsletter image for JPEG normalization; falling back to raw buffer send",
-					);
-					outboundMime = normalizedSourceMime || "image/jpeg";
+					outboundBuffer = normalizedResult.outboundBuffer;
+					outboundMime = normalizedResult.outboundMime || "image/jpeg";
+					width = normalizedResult.width;
+					height = normalizedResult.height;
+					lastNormalizationError = null;
+					break;
+				} catch (err) {
+					lastNormalizationError = err;
 				}
 			}
-		} else if (shouldForceJpeg) {
-			outboundMime = normalizedSourceMime || "image/jpeg";
+			if (!width || !height) {
+				for (const readImageDimensions of [
+					readImageDimensionsWithSharp,
+					readImageDimensionsWithJimp,
+				]) {
+					try {
+						const dimensions = await readImageDimensions({ sourceBuffer });
+						if (!dimensions) {
+							continue;
+						}
+						width = dimensions.width;
+						height = dimensions.height;
+						break;
+					} catch {}
+				}
+			}
+			if (outboundMime !== "image/jpeg" && lastNormalizationError) {
+				state.logger?.debug?.(
+					{
+						err: lastNormalizationError,
+						jid,
+						discordMessageId: normalizeBridgeMessageId(discordMessageId),
+						sourceMime: normalizedSourceMime || null,
+					},
+					"Failed to decode newsletter image for JPEG normalization; falling back to raw buffer send",
+				);
+				outboundMime = normalizedSourceMime || "image/jpeg";
+			}
+		} else {
+			for (const readImageDimensions of [
+				readImageDimensionsWithSharp,
+				readImageDimensionsWithJimp,
+			]) {
+				try {
+					const dimensions = await readImageDimensions({ sourceBuffer });
+					if (!dimensions) {
+						continue;
+					}
+					width = dimensions.width;
+					height = dimensions.height;
+					break;
+				} catch {}
+			}
 		}
 
 		const normalizedContent = {
@@ -766,6 +1253,130 @@ const normalizeNewsletterImageSendContent = async ({
 			"Failed to normalize newsletter image attachment",
 		);
 		return content;
+	}
+};
+
+const normalizeRegularImageSendContentForWhatsApp = async ({
+	attachment,
+	content,
+	jid,
+	discordMessageId,
+} = {}) => {
+	if (isNewsletterJid(jid) || !content?.image) {
+		return content;
+	}
+	const normalizedSourceMime = normalizeMimeType(content?.mimetype);
+	if (
+		!normalizedSourceMime.startsWith("image/") ||
+		WHATSAPP_SAFE_IMAGE_MIME_TYPES.has(normalizedSourceMime) ||
+		WHATSAPP_PRESERVE_SOURCE_IMAGE_MIME_TYPES.has(normalizedSourceMime)
+	) {
+		return content;
+	}
+	const fallbackToDocument = (documentSource = null) =>
+		buildDocumentFallbackContent({
+			attachment,
+			content,
+			sourceMime: normalizedSourceMime,
+			documentSource,
+		});
+	try {
+		const sourceBuffer = await loadImageBufferForNormalization(content?.image);
+		if (!sourceBuffer?.length) {
+			state.logger?.debug?.(
+				{
+					jid,
+					discordMessageId: normalizeBridgeMessageId(discordMessageId),
+					sourceMime: normalizedSourceMime || null,
+				},
+				"Could not load unsupported Discord image for normalization; falling back to document send",
+			);
+			return fallbackToDocument();
+		}
+
+		for (const normalizeBuffer of [
+			normalizeImageBufferWithSharp,
+			normalizeImageBufferWithJimp,
+		]) {
+			try {
+				const normalizedResult = await normalizeBuffer({
+					sourceBuffer,
+					sourceMime: normalizedSourceMime,
+				});
+				if (!normalizedResult) {
+					continue;
+				}
+				if (normalizedResult.animated) {
+					state.logger?.debug?.(
+						{
+							jid,
+							discordMessageId: normalizeBridgeMessageId(discordMessageId),
+							sourceMime: normalizedSourceMime || null,
+							sourceBytes: sourceBuffer.length,
+							decoder: normalizedResult.decoder,
+						},
+						"Unsupported animated Discord image cannot be safely flattened; falling back to document send",
+					);
+					return fallbackToDocument(sourceBuffer);
+				}
+				if (!normalizedResult.outboundBuffer?.length) {
+					continue;
+				}
+				state.logger?.debug?.(
+					{
+						jid,
+						discordMessageId: normalizeBridgeMessageId(discordMessageId),
+						sourceMime: normalizedSourceMime || null,
+						sourceBytes: sourceBuffer.length,
+						outboundBytes: normalizedResult.outboundBuffer.length,
+						outboundMime: normalizedResult.outboundMime,
+						width: normalizedResult.width,
+						height: normalizedResult.height,
+						decoder: normalizedResult.decoder,
+					},
+					"Normalized Discord image attachment before WhatsApp send",
+				);
+				return buildNormalizedImageContent({
+					content,
+					outboundBuffer: normalizedResult.outboundBuffer,
+					outboundMime: normalizedResult.outboundMime,
+					width: normalizedResult.width,
+					height: normalizedResult.height,
+				});
+			} catch (err) {
+				state.logger?.debug?.(
+					{
+						err,
+						jid,
+						discordMessageId: normalizeBridgeMessageId(discordMessageId),
+						sourceMime: normalizedSourceMime || null,
+					},
+					"Failed to decode unsupported Discord image with normalizer",
+				);
+			}
+		}
+
+		state.logger?.debug?.(
+			{
+				jid,
+				discordMessageId: normalizeBridgeMessageId(discordMessageId),
+				sourceMime: normalizedSourceMime || null,
+				sourceBytes: sourceBuffer.length,
+			},
+			"No supported decoder was available for unsupported Discord image; falling back to document send",
+		);
+		return fallbackToDocument(sourceBuffer);
+	} catch (err) {
+		state.logger?.debug?.(
+			{
+				err,
+				jid,
+				discordMessageId: normalizeBridgeMessageId(discordMessageId),
+				sourceMime: normalizedSourceMime || null,
+			},
+			"Failed to pre-normalize Discord image attachment",
+		);
+		return fallbackToDocument();
 	}
 };
 
@@ -2358,28 +2969,28 @@ const connectToWhatsApp = async (retry = 1) => {
 		}
 	}
 
-	const client = createWhatsAppClient({
-		version,
-		printQRInTerminal: false,
-		auth: authState,
-		logger: state.logger,
+		const client = createWhatsAppClient({
+			version,
+			printQRInTerminal: false,
+			auth: authState,
+			logger: state.logger,
 		markOnlineOnConnect: false,
 		syncFullHistory: true,
 		shouldSyncHistoryMessage: () => true,
 		generateHighQualityLinkPreview: true,
 		cachedGroupMetadata: async (jid) =>
 			groupMetadataCache.get(utils.whatsapp.formatJid(jid)),
-		getMessage: async (key) => {
-			const stored = await getStoredMessageWithJidFallback({
-				...key,
-				remoteJid: utils.whatsapp.formatJid(key?.remoteJid),
-			});
-			if (!stored) return null;
+			getMessage: async (key) => {
+				const stored = await getStoredMessageWithJidFallback({
+					...key,
+					remoteJid: utils.whatsapp.formatJid(key?.remoteJid),
+				});
+				if (!stored) return null;
 
-			return stored.message || stored;
-		},
-		browser: ["Firefox (Linux)", "", ""],
-	});
+				return stored.message || stored;
+			},
+			browser: ["Firefox (Linux)", "", ""],
+		});
 	client.contacts = state.contacts;
 	patchSendMessageForLinkPreviews(client);
 	patchSendNodeForNewsletterMessages(client);
@@ -3408,249 +4019,364 @@ const connectToWhatsApp = async (retry = 1) => {
 				);
 			}
 		};
-		const sendTrackedMessage = async (
-			content,
-			sendOptions,
+			const sendTrackedMessage = async (
+				content,
+				sendOptions,
 			{
 				ackContext = "Newsletter send",
 				notifyAckFailure = false,
 				retryWithoutQuotedOnAck = true,
-				forceNewsletterAck = false,
-				watchNewsletterAck = false,
-			} = {},
-		) => {
-			if (newsletterChat) {
-				noteNewsletterMessageDebug({
-					discordMessageId: message.id,
-					jid: targetJid,
-					operation: ackContext,
-					phase: "attempt",
-					details: {
-						...summarizeNewsletterContentForDebug(content),
-						hasQuoted: Boolean(sendOptions?.quoted),
-					},
-				});
-				await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
-			}
-			const sentMessage = await sendWithNewsletterQuoteFallback(
-				content,
-				sendOptions,
-			);
-			const outboundId = normalizeBridgeMessageId(sentMessage?.key?.id);
-			const mediaStanzaDebug = newsletterChat
-				? getNewsletterMediaStanzaDebug(outboundId)
-				: null;
-			mapDiscordMessageToWhatsAppMessage({
-				discordMessageId: message.id,
-				sentMessage,
-				isNewsletter: newsletterChat,
-			});
-			if (newsletterChat) {
-				notePendingNewsletterSend({
-					jid: targetJid,
-					discordMessageId: message.id,
-					outboundId: sentMessage?.key?.id,
-					content,
-				});
-			}
-			if (newsletterChat) {
-				if (mediaStanzaDebug) {
+					forceNewsletterAck = false,
+					watchNewsletterAck = false,
+				} = {},
+			) => {
+				if (newsletterChat) {
 					noteNewsletterMessageDebug({
 						discordMessageId: message.id,
 						jid: targetJid,
 						operation: ackContext,
-						phase: "stanza_prepared",
+						phase: "attempt",
 						details: {
-							...mediaStanzaDebug,
+							...summarizeNewsletterContentForDebug(content),
+							hasQuoted: Boolean(sendOptions?.quoted),
+						},
+					});
+					await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
+				}
+				const sentMessage = await sendWithNewsletterQuoteFallback(
+					content,
+					sendOptions,
+				);
+				const outboundId = normalizeBridgeMessageId(sentMessage?.key?.id);
+				const mediaStanzaDebug = newsletterChat
+					? getNewsletterMediaStanzaDebug(outboundId)
+					: null;
+				mapDiscordMessageToWhatsAppMessage({
+					discordMessageId: message.id,
+					sentMessage,
+					isNewsletter: newsletterChat,
+				});
+				if (newsletterChat) {
+					notePendingNewsletterSend({
+						jid: targetJid,
+						discordMessageId: message.id,
+						outboundId: sentMessage?.key?.id,
+						content,
+					});
+				}
+				if (newsletterChat) {
+					if (mediaStanzaDebug) {
+						noteNewsletterMessageDebug({
+							discordMessageId: message.id,
+							jid: targetJid,
+							operation: ackContext,
+							phase: "stanza_prepared",
+							details: {
+								...mediaStanzaDebug,
+							},
+						});
+					}
+					noteNewsletterMessageDebug({
+						discordMessageId: message.id,
+						jid: targetJid,
+						operation: ackContext,
+						phase: "sent",
+						details: {
+							outboundId,
+							serverId: normalizeBridgeMessageId(
+								getNewsletterServerIdFromMessage(sentMessage),
+							),
 						},
 					});
 				}
-				noteNewsletterMessageDebug({
-					discordMessageId: message.id,
-					jid: targetJid,
-					operation: ackContext,
-					phase: "sent",
-					details: {
-						outboundId,
-						serverId: normalizeBridgeMessageId(
-							getNewsletterServerIdFromMessage(sentMessage),
-						),
-					},
-				});
-			}
-			storeMessage(sentMessage);
-			const shouldTrackNewsletterAck =
-				newsletterChat && (useNewsletterSpecialFlow || forceNewsletterAck);
-			const notifyNewsletterAckFailure = async (ackErrorCode) => {
-				const ackStanzaDebug = getNewsletterMediaStanzaDebug(
+				storeMessage(sentMessage);
+				const shouldTrackNewsletterAck =
+					newsletterChat && (useNewsletterSpecialFlow || forceNewsletterAck);
+				const notifyNewsletterAckFailure = async (ackErrorCode) => {
+					const ackStanzaDebug = getNewsletterMediaStanzaDebug(
+						sentMessage?.key?.id,
+					);
+					clearFailedNewsletterMapping({
+						discordMessageId: message.id,
+						sentMessage,
+					});
+					state.logger?.warn?.(
+						{
+							jid: targetJid,
+							discordMessageId: message.id,
+							outboundId: sentMessage?.key?.id,
+							serverId: getNewsletterServerIdFromMessage(sentMessage),
+							error: ackErrorCode,
+							stanza: ackStanzaDebug || undefined,
+						},
+						`${ackContext} was rejected by WhatsApp ack`,
+					);
+					noteNewsletterMessageDebug({
+						discordMessageId: message.id,
+						jid: targetJid,
+						operation: ackContext,
+						phase: "ack_rejected",
+						details: {
+							outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
+							serverId: normalizeBridgeMessageId(
+								getNewsletterServerIdFromMessage(sentMessage),
+							),
+							error: normalizeBridgeMessageId(ackErrorCode),
+							stanza: ackStanzaDebug || undefined,
+						},
+					});
+					if (notifyAckFailure) {
+						await message.channel
+							?.send(
+								`Couldn't send this message to WhatsApp newsletter (ack ${ackErrorCode}).`,
+							)
+							.catch(() => {});
+					}
+				};
+				if (!shouldTrackNewsletterAck) {
+					if (newsletterChat && watchNewsletterAck) {
+						const ackWaitMs = newsletterAckWaitMsForSentMessage(sentMessage);
+						void (async () => {
+							const ackErrorCode = await waitForNewsletterAckError(
+								sentMessage?.key?.id,
+								ackWaitMs,
+							);
+							if (!ackErrorCode) return;
+							await notifyNewsletterAckFailure(ackErrorCode);
+						})();
+					}
+					return { sentMessage, ackErrorCode: null };
+				}
+
+				const ackWaitMs = newsletterAckWaitMsForSentMessage(sentMessage);
+				const ackErrorCode = await waitForNewsletterAckError(
 					sentMessage?.key?.id,
+					ackWaitMs,
 				);
-				clearFailedNewsletterMapping({
-					discordMessageId: message.id,
-					sentMessage,
-				});
-				state.logger?.warn?.(
-					{
-						jid: targetJid,
+				if (!ackErrorCode) {
+					noteNewsletterMessageDebug({
 						discordMessageId: message.id,
-						outboundId: sentMessage?.key?.id,
-						serverId: getNewsletterServerIdFromMessage(sentMessage),
-						error: ackErrorCode,
-						stanza: ackStanzaDebug || undefined,
-					},
-					`${ackContext} was rejected by WhatsApp ack`,
-				);
-				noteNewsletterMessageDebug({
-					discordMessageId: message.id,
-					jid: targetJid,
-					operation: ackContext,
-					phase: "ack_rejected",
-					details: {
-						outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
-						serverId: normalizeBridgeMessageId(
-							getNewsletterServerIdFromMessage(sentMessage),
-						),
-						error: normalizeBridgeMessageId(ackErrorCode),
-						stanza: ackStanzaDebug || undefined,
-					},
-				});
-				if (notifyAckFailure) {
-					await message.channel
-						?.send(
-							`Couldn't send this message to WhatsApp newsletter (ack ${ackErrorCode}).`,
-						)
-						.catch(() => {});
-				}
-			};
-			if (!shouldTrackNewsletterAck) {
-				if (newsletterChat && watchNewsletterAck) {
-					const ackWaitMs = newsletterAckWaitMsForSentMessage(sentMessage);
-					void (async () => {
-						const ackErrorCode = await waitForNewsletterAckError(
-							sentMessage?.key?.id,
+						jid: targetJid,
+						operation: ackContext,
+						phase: "ack_ok",
+						details: {
+							outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
+							serverId: normalizeBridgeMessageId(
+								getNewsletterServerIdFromMessage(sentMessage),
+							),
 							ackWaitMs,
-						);
-						if (!ackErrorCode) return;
-						await notifyNewsletterAckFailure(ackErrorCode);
-					})();
+						},
+					});
+					return { sentMessage, ackErrorCode: null };
 				}
-				return { sentMessage, ackErrorCode: null };
-			}
 
-			const ackWaitMs = newsletterAckWaitMsForSentMessage(sentMessage);
-			const ackErrorCode = await waitForNewsletterAckError(
-				sentMessage?.key?.id,
-				ackWaitMs,
-			);
-			if (!ackErrorCode) {
-				noteNewsletterMessageDebug({
-					discordMessageId: message.id,
-					jid: targetJid,
-					operation: ackContext,
-					phase: "ack_ok",
-					details: {
-						outboundId: normalizeBridgeMessageId(sentMessage?.key?.id),
-						serverId: normalizeBridgeMessageId(
-							getNewsletterServerIdFromMessage(sentMessage),
-						),
-						ackWaitMs,
-					},
-				});
-				return { sentMessage, ackErrorCode: null };
-			}
-
-			if (
-				useNewsletterSpecialFlow &&
-				retryWithoutQuotedOnAck &&
-				sendOptions?.quoted
-			) {
-				clearFailedNewsletterMapping({
-					discordMessageId: message.id,
-					sentMessage,
-				});
-				const replyContext = await ensureNewsletterReplyFallbackContext();
-				const retryContent = cloneNewsletterSendContentWithReplyFallback(
-					content,
-					replyContext,
-				);
-				const retryOptions = { ...sendOptions };
-				delete retryOptions.quoted;
-				state.logger?.warn?.(
-					{
-						jid: targetJid,
+				if (
+					useNewsletterSpecialFlow &&
+					retryWithoutQuotedOnAck &&
+					sendOptions?.quoted
+				) {
+					clearFailedNewsletterMapping({
 						discordMessageId: message.id,
-						outboundId: sentMessage?.key?.id,
-						serverId: getNewsletterServerIdFromMessage(sentMessage),
-						error: ackErrorCode,
-						ackWaitMs,
-					},
-					`${ackContext} was rejected by WhatsApp ack; retrying without quoted context`,
-				);
-				return await sendTrackedMessage(
-					retryContent,
-					Object.keys(retryOptions).length ? retryOptions : undefined,
-					{
-						ackContext,
-						notifyAckFailure,
-						retryWithoutQuotedOnAck: false,
-					},
-				);
-			}
-			await notifyNewsletterAckFailure(ackErrorCode);
-			return { sentMessage, ackErrorCode };
-		};
+						sentMessage,
+					});
+					const replyContext = await ensureNewsletterReplyFallbackContext();
+					const retryContent = cloneNewsletterSendContentWithReplyFallback(
+						content,
+						replyContext,
+					);
+					const retryOptions = { ...sendOptions };
+					delete retryOptions.quoted;
+					state.logger?.warn?.(
+						{
+							jid: targetJid,
+							discordMessageId: message.id,
+							outboundId: sentMessage?.key?.id,
+							serverId: getNewsletterServerIdFromMessage(sentMessage),
+							error: ackErrorCode,
+							ackWaitMs,
+						},
+						`${ackContext} was rejected by WhatsApp ack; retrying without quoted context`,
+					);
+					return await sendTrackedMessage(
+						retryContent,
+						Object.keys(retryOptions).length ? retryOptions : undefined,
+						{
+							ackContext,
+							notifyAckFailure,
+							retryWithoutQuotedOnAck: false,
+						},
+					);
+				}
+				await notifyNewsletterAckFailure(ackErrorCode);
+				return { sentMessage, ackErrorCode };
+			};
 
-		if (state.settings.UploadAttachments && attachmentsToSend.length > 0) {
-			let first = true;
-			let sentAnyAttachment = false;
-			let attemptedAttachmentSends = 0;
-			for (const file of attachmentsToSend) {
-				const preparedFile = normalizeAttachmentForWhatsAppSend(file);
-				let doc = utils.whatsapp.createDocumentContent(preparedFile);
-				if (!doc) continue;
-				doc = await normalizeAudioSendContentForWhatsApp({
-					attachment: preparedFile,
-					content: doc,
-					jid: targetJid,
-					discordMessageId: message?.id,
-				});
-				if (newsletterChat) {
-					doc = await normalizeNewsletterImageSendContent({
-						content: doc,
+			if (state.settings.UploadAttachments && attachmentsToSend.length > 0) {
+				const preparedAttachments = [];
+				for (const file of attachmentsToSend) {
+					const preparedFile = normalizeAttachmentForWhatsAppSend(file);
+					let doc = await normalizeStickerSendContentForWhatsApp({
+						attachment: preparedFile,
 						jid: targetJid,
 						discordMessageId: message?.id,
 					});
-				}
-				attemptedAttachmentSends += 1;
-				if (first) {
-					let captionText = hasOnlyCustomEmoji ? "" : text;
-					if (isForwardedFromDiscord) {
-						captionText = captionText
-							? `Forwarded\n${captionText}`
-							: "Forwarded";
+					if (!doc) {
+						doc = utils.whatsapp.createDocumentContent(preparedFile);
 					}
-					if (
-						useNewsletterSpecialFlow &&
-						hasReplyReference &&
-						!options.quoted
-					) {
-						const replyContext = await ensureNewsletterReplyFallbackContext();
-						captionText = prependReplyFallbackContext(
-							captionText,
-							replyContext,
+					if (!doc) continue;
+					if (!doc.sticker) {
+						doc = await normalizeAudioSendContentForWhatsApp({
+							attachment: preparedFile,
+							content: doc,
+							jid: targetJid,
+							discordMessageId: message?.id,
+						});
+						doc = await normalizeRegularImageSendContentForWhatsApp({
+							attachment: preparedFile,
+							content: doc,
+							jid: targetJid,
+							discordMessageId: message?.id,
+						});
+						doc = await ensureImageThumbForWhatsAppSend({
+							content: doc,
+							jid: targetJid,
+							discordMessageId: message?.id,
+						});
+						if (newsletterChat) {
+							doc = await normalizeNewsletterImageSendContent({
+								content: doc,
+								jid: targetJid,
+								discordMessageId: message?.id,
+							});
+						}
+					}
+					preparedAttachments.push({
+						attachment: preparedFile,
+						content: doc,
+					});
+			}
+
+			const attachmentCaptionText = await buildAttachmentCaptionText({
+				text,
+				hasOnlyCustomEmoji,
+				isForwardedFromDiscord,
+				useNewsletterSpecialFlow,
+				hasReplyReference,
+				options,
+				ensureNewsletterReplyFallbackContext,
+				prependReplyFallbackContext,
+			});
+
+			const albumEligibleAttachments = preparedAttachments.filter(({ content }) =>
+				Boolean(getAlbumEligibleMediaKind(content)),
+			);
+				const canUseMediaAlbum =
+					!newsletterChat &&
+					!isBroadcastJid(targetJid) &&
+					preparedAttachments.length >= 2 &&
+					albumEligibleAttachments.length === preparedAttachments.length;
+			if (canUseMediaAlbum) {
+				let sentAnyAlbum = false;
+				for (const [batchIndex, batch] of chunkList(
+					preparedAttachments,
+					WHATSAPP_MEDIA_ALBUM_MAX_ITEMS,
+				).entries()) {
+					const albumResult = await sendMediaAlbumToWhatsApp({
+						client,
+						jid: targetJid,
+						discordMessageId: message.id,
+						contents: batch.map((entry) => entry.content),
+						captionText: batchIndex === 0 ? attachmentCaptionText : "",
+						mentionJids: batchIndex === 0 ? mentionJids : [],
+						quoted: batchIndex === 0 ? options?.quoted : undefined,
+					});
+					if (albumResult?.error) {
+						state.logger?.error?.(
+							{
+								err: albumResult.error,
+								jid: targetJid,
+								discordMessageId: message?.id,
+								attachments: batch.length,
+							},
+							albumResult.startedRelay
+								? "Failed while relaying WhatsApp media album"
+								: "Failed to prepare WhatsApp media album; falling back to sequential attachment sends",
 						);
 					}
-					if (captionText || mentionJids.length) doc.caption = captionText;
-					if (!newsletterChat && mentionJids.length) doc.mentions = mentionJids;
+					if (albumResult?.startedRelay) {
+						sentAnyAlbum = true;
+						if (albumResult.sentChildren === 0) {
+							state.logger?.warn?.(
+								{
+									jid: targetJid,
+									discordMessageId: message?.id,
+								},
+								"WhatsApp media album relay started but no children were confirmed sent; skipping sequential fallback to avoid duplicates",
+							);
+						}
+						continue;
+					}
+					if (!albumResult?.sentChildren) {
+						if (sentAnyAlbum) {
+							return;
+						}
+						sentAnyAlbum = false;
+						break;
+					}
+					sentAnyAlbum = true;
 				}
-				try {
-					const { ackErrorCode } = await sendTrackedMessage(
-						doc,
-						first ? options : undefined,
+					if (sentAnyAlbum) {
+						return;
+					}
+				}
+
+				const firstPreparedContent = preparedAttachments[0]?.content || null;
+				const firstAttachmentIsSticker = Boolean(firstPreparedContent?.sticker);
+				const sentStandaloneStickerText =
+					firstAttachmentIsSticker && Boolean(attachmentCaptionText);
+				if (sentStandaloneStickerText) {
+					const standaloneTextPayload = { text: attachmentCaptionText };
+					if (!newsletterChat && mentionJids.length) {
+						standaloneTextPayload.mentions = mentionJids;
+					}
+					await sendTrackedMessage(
+						standaloneTextPayload,
+						options,
 						{
-							ackContext: "Newsletter attachment send",
+							ackContext: "Sticker companion text send",
 							forceNewsletterAck: newsletterChat,
 						},
+					);
+				}
+
+				let first = true;
+				let sentAnyAttachment = false;
+				let attemptedAttachmentSends = 0;
+				for (const { attachment: preparedFile, content: doc } of preparedAttachments) {
+					attemptedAttachmentSends += 1;
+					if (first) {
+						if (
+							!sentStandaloneStickerText &&
+							(attachmentCaptionText || mentionJids.length)
+						) {
+							doc.caption = attachmentCaptionText;
+						}
+						if (
+							!sentStandaloneStickerText &&
+							!newsletterChat &&
+							mentionJids.length
+						) {
+							doc.mentions = mentionJids;
+						}
+					}
+					try {
+						const { ackErrorCode } = await sendTrackedMessage(
+							doc,
+							first && !sentStandaloneStickerText ? options : undefined,
+							{
+								ackContext: "Newsletter attachment send",
+								forceNewsletterAck: newsletterChat,
+							},
 					);
 					if (!ackErrorCode) {
 						sentAnyAttachment = true;
@@ -4026,156 +4752,158 @@ const connectToWhatsApp = async (retry = 1) => {
 	client.ev.on(
 		"discordReaction",
 		async ({ jid, reaction, removed, messageId: resolvedMessageId }) => {
-		if (!allowsDiscordToWhatsApp()) {
-			return;
-		}
-
-		const targetJid = normalizeSendJid(jid);
-		const newsletterChat = isNewsletterJid(targetJid);
-		const mappedMessageId =
-			normalizeBridgeMessageId(resolvedMessageId) ||
-			normalizeBridgeMessageId(state.lastMessages[reaction.message.id]);
-		if (!mappedMessageId && !newsletterChat) {
-			state.logger?.warn?.(
-				{
-					jid: targetJid,
-					discordMessageId: reaction?.message?.id,
-				},
-				"Skipping Discord reaction because the linked WhatsApp message ID is unavailable",
-			);
-			return;
-		}
-		const key = {
-			id: mappedMessageId,
-			fromMe:
-				reaction.message.webhookId == null ||
-				reaction.message.author.username === "You",
-			remoteJid: targetJid,
-		};
-
-		if (targetJid.endsWith("@g.us")) {
-			key.participant = utils.whatsapp.toJid(reaction.message.author.username);
-		}
-
-		if (newsletterChat) {
-			await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
-			const candidateId = normalizeBridgeMessageId(key.id);
-			const hasPendingSend = Boolean(
-				getPendingNewsletterSend({
-					jid: targetJid,
-					outboundId: candidateId,
-					discordMessageId: reaction?.message?.id,
-				}),
-			);
-			let serverId = await waitForNewsletterServerId({
-				discordMessageId: reaction?.message?.id,
-				candidateId: key.id,
-				timeoutMs: hasPendingSend
-					? NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS
-					: NEWSLETTER_SERVER_ID_WAIT_WITHOUT_PENDING_MS,
-				pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
-			});
-			if (!serverId) {
-				serverId = await resolveNewsletterServerIdFromFetch({
-					client,
-					jid: targetJid,
-					discordMessageId: reaction?.message?.id,
-					candidateId,
-				});
+			if (!allowsDiscordToWhatsApp()) {
+				return;
 			}
-			const actionId = serverId || candidateId;
-			if (!actionId) {
+
+			const targetJid = normalizeSendJid(jid);
+			const newsletterChat = isNewsletterJid(targetJid);
+			const mappedMessageId =
+				normalizeBridgeMessageId(resolvedMessageId) ||
+				normalizeBridgeMessageId(state.lastMessages[reaction.message.id]);
+			if (!mappedMessageId && !newsletterChat) {
 				state.logger?.warn?.(
 					{
 						jid: targetJid,
 						discordMessageId: reaction?.message?.id,
-						candidateId: key.id,
 					},
-					"Timed out waiting for newsletter server ID before reaction",
+					"Skipping Discord reaction because the linked WhatsApp message ID is unavailable",
 				);
-				await reaction?.message?.channel
-					?.send(
-						"Couldn't send that reaction yet because the newsletter server message ID is still unavailable.",
-					)
-					.catch(() => {});
 				return;
 			}
-			if (!serverId && candidateId) {
-				const sendAckError = getNewsletterAckError(candidateId);
-				if (sendAckError) {
+			const key = {
+				id: mappedMessageId,
+				fromMe:
+					reaction.message.webhookId == null ||
+					reaction.message.author.username === "You",
+				remoteJid: targetJid,
+			};
+
+			if (targetJid.endsWith("@g.us")) {
+				key.participant = utils.whatsapp.toJid(
+					reaction.message.author.username,
+				);
+			}
+
+			if (newsletterChat) {
+				await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
+				const candidateId = normalizeBridgeMessageId(key.id);
+				const hasPendingSend = Boolean(
+					getPendingNewsletterSend({
+						jid: targetJid,
+						outboundId: candidateId,
+						discordMessageId: reaction?.message?.id,
+					}),
+				);
+				let serverId = await waitForNewsletterServerId({
+					discordMessageId: reaction?.message?.id,
+					candidateId: key.id,
+					timeoutMs: hasPendingSend
+						? NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS
+						: NEWSLETTER_SERVER_ID_WAIT_WITHOUT_PENDING_MS,
+					pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
+				});
+				if (!serverId) {
+					serverId = await resolveNewsletterServerIdFromFetch({
+						client,
+						jid: targetJid,
+						discordMessageId: reaction?.message?.id,
+						candidateId,
+					});
+				}
+				const actionId = serverId || candidateId;
+				if (!actionId) {
+					state.logger?.warn?.(
+						{
+							jid: targetJid,
+							discordMessageId: reaction?.message?.id,
+							candidateId: key.id,
+						},
+						"Timed out waiting for newsletter server ID before reaction",
+					);
+					await reaction?.message?.channel
+						?.send(
+							"Couldn't send that reaction yet because the newsletter server message ID is still unavailable.",
+						)
+						.catch(() => {});
+					return;
+				}
+				if (!serverId && candidateId) {
+					const sendAckError = getNewsletterAckError(candidateId);
+					if (sendAckError) {
+						state.logger?.warn?.(
+							{
+								jid: targetJid,
+								discordMessageId: reaction?.message?.id,
+								candidateId,
+								error: sendAckError,
+							},
+							"Skipping newsletter reaction because original message was rejected by WhatsApp ack",
+						);
+						await reaction?.message?.channel
+							?.send(
+								`Couldn't react because the original newsletter send failed (ack ${sendAckError}).`,
+							)
+							.catch(() => {});
+						return;
+					}
 					state.logger?.warn?.(
 						{
 							jid: targetJid,
 							discordMessageId: reaction?.message?.id,
 							candidateId,
-							error: sendAckError,
 						},
-						"Skipping newsletter reaction because original message was rejected by WhatsApp ack",
+						"Timed out waiting for newsletter server ID before reaction; falling back to outbound message ID",
 					);
-					await reaction?.message?.channel
-						?.send(
-							`Couldn't react because the original newsletter send failed (ack ${sendAckError}).`,
-						)
-						.catch(() => {});
+				}
+				if (typeof client.newsletterReactMessage !== "function") {
+					state.logger?.warn?.(
+						{ jid: targetJid },
+						"newsletterReactMessage is unavailable on this WhatsApp client",
+					);
 					return;
 				}
-				state.logger?.warn?.(
-					{
-						jid: targetJid,
-						discordMessageId: reaction?.message?.id,
-						candidateId,
-					},
-					"Timed out waiting for newsletter server ID before reaction; falling back to outbound message ID",
-				);
-			}
-			if (typeof client.newsletterReactMessage !== "function") {
-				state.logger?.warn?.(
-					{ jid: targetJid },
-					"newsletterReactMessage is unavailable on this WhatsApp client",
-				);
+				state.lastMessages[reaction.message.id] = actionId;
+				state.lastMessages[actionId] = reaction.message.id;
+
+				try {
+					await client.newsletterReactMessage(
+						targetJid,
+						actionId,
+						removed ? undefined : reaction.emoji.name,
+					);
+					state.sentReactions.add(actionId);
+				} catch (err) {
+					state.logger?.error(err);
+					await reaction?.message?.channel
+						?.send(
+							"Couldn't apply that reaction on the WhatsApp newsletter message.",
+						)
+						.catch(() => {});
+				}
 				return;
 			}
-			state.lastMessages[reaction.message.id] = actionId;
-			state.lastMessages[actionId] = reaction.message.id;
 
+			const reactionOptions = buildSendOptionsForJid(targetJid);
 			try {
-				await client.newsletterReactMessage(
+				const reactionMsg = await client.sendMessage(
 					targetJid,
-					actionId,
-					removed ? undefined : reaction.emoji.name,
+					{
+						react: {
+							text: removed ? "" : reaction.emoji.name,
+							key,
+						},
+					},
+					reactionOptions,
 				);
-				state.sentReactions.add(actionId);
+				const messageId = reactionMsg.key.id;
+				state.lastMessages[messageId] = true;
+				state.sentMessages.add(messageId);
+				state.sentReactions.add(key.id);
 			} catch (err) {
 				state.logger?.error(err);
-				await reaction?.message?.channel
-					?.send(
-						"Couldn't apply that reaction on the WhatsApp newsletter message.",
-					)
-					.catch(() => {});
 			}
-			return;
-		}
-
-		const reactionOptions = buildSendOptionsForJid(targetJid);
-		try {
-			const reactionMsg = await client.sendMessage(
-				targetJid,
-				{
-					react: {
-						text: removed ? "" : reaction.emoji.name,
-						key,
-					},
-				},
-				reactionOptions,
-			);
-			const messageId = reactionMsg.key.id;
-			state.lastMessages[messageId] = true;
-			state.sentMessages.add(messageId);
-			state.sentReactions.add(key.id);
-		} catch (err) {
-			state.logger?.error(err);
-		}
-	},
+		},
 	);
 
 	client.ev.on("discordDelete", async ({ jid, id, discordMessageId }) => {

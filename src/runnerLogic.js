@@ -192,6 +192,52 @@ export const revertExecutableToBackupSync = ({
 	};
 };
 
+export const revertPackagedArtifactsToBackupSync = ({
+	currentExeName,
+	execPath = process.execPath,
+	cwd = process.cwd(),
+	fsModule = fs,
+	pathModule = path,
+} = {}) => {
+	const executableResult = revertExecutableToBackupSync({
+		currentExeName,
+		execPath,
+		cwd,
+		fsModule,
+		pathModule,
+	});
+	if (!executableResult.success) {
+		return executableResult;
+	}
+
+	const runtimePath = pathModule.join(pathModule.dirname(execPath), "runtime");
+	const runtimeBackupPath = `${runtimePath}.oldVersion`;
+	const hasRuntimeBackup = fsModule.existsSync(runtimeBackupPath);
+
+	try {
+		if (hasRuntimeBackup) {
+			fsModule.rmSync(runtimePath, { recursive: true, force: true });
+			fsModule.renameSync(runtimeBackupPath, runtimePath);
+		}
+	} catch (err) {
+		return {
+			success: false,
+			reason: "runtime-rollback-failed",
+			err,
+			backupPath: executableResult.backupPath,
+			currentPath: executableResult.currentPath,
+			runtimeBackupPath,
+			runtimePath,
+		};
+	}
+
+	return {
+		...executableResult,
+		runtimeBackupPath: hasRuntimeBackup ? runtimeBackupPath : null,
+		runtimePath,
+	};
+};
+
 export const createUpdateValidationState = ({
 	targetVersion = null,
 	nowMs = Date.now(),

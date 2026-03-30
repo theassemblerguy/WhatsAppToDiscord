@@ -12,7 +12,7 @@ Originally created by [Fatih Kilic](https://github.com/FKLC), now maintained by 
 
 ## Features
 
-- Supports media (Image, Video, Audio, Document, Stickers) and reactions!
+- Supports media (Image, Video, Audio, Document, Stickers), including Discord sticker conversion for WhatsApp, and reactions!
 - Allows whitelisting, so you can choose what to see on Discord
 - Translates mentions between WhatsApp and Discord
 - Allows usage of WhatsApp through the Discord overlay
@@ -86,6 +86,8 @@ This keeps you in control of when updates are applied instead of auto-updating.
 - Images are pushed to the GitHub Container Registry on every release with immutable version tags plus moving `latest` (stable) and `unstable` channels.
 - The bot checks for new releases every couple of days. Set `WA2DC_UPDATE_CHANNEL=unstable` to be notified about prereleases; otherwise it follows the stable channel.
 - Packaged binaries can apply updates after you confirm with the `update` command. Set `WA2DC_KEEP_OLD_BINARY=1` to keep the previous executable as a rollback.
+- Packaged self-update refreshes the executable and the signed `runtime/` sidecar archive together when the release publishes matching artifacts.
+- Packaged startup also attempts a one-time signed bootstrap of `runtime/` when the sidecar is missing or unusable, so end users normally do not need to install it manually.
 - Switch channels from the control channel with `updateChannel stable|unstable`.
 - Packaged installs keep the previous binary so you can run `rollback` from the control channel if a release breaks.
 - Packaged installs running through `src/runner.js` now auto-rollback after an `/update` if the new build crash-loops during startup (2 non-zero exits before 120 seconds uptime).

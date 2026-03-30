@@ -383,7 +383,8 @@ Dismiss the current update notification without installing.
 
 ### `/update`
 Download and install the available release (packaged installs only). Docker/source deployments will be reminded to pull and restart manually.  
-If the updated packaged binary crash-loops during startup, the watchdog runner automatically rolls back to the previous `.oldVersion` binary (2 non-zero exits before 120 seconds uptime).
+For packaged installs, the updater refreshes both the executable and the matching signed `runtime/` sidecar archive when the release publishes one.  
+If the updated packaged install crash-loops during startup, the watchdog runner automatically rolls back to the previous `.oldVersion` executable and `runtime/` sidecar (2 non-zero exits before 120 seconds uptime).
 
 ### `/rollback`
 Restore the previous packaged binary when one is available. The dedicated “Roll back” button only appears if a backup exists.  

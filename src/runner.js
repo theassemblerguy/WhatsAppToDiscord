@@ -16,7 +16,7 @@ import {
 	resolveRestartDelayMs,
 	resolveRestartFlagPath,
 	resolveSafeRuntimeResetWindowMs,
-	revertExecutableToBackupSync,
+	revertPackagedArtifactsToBackupSync,
 	UPDATE_VALIDATION_WINDOW_MS,
 } from "./runnerLogic.js";
 
@@ -163,7 +163,7 @@ function createUpdateValidationTracker({ logger, canAutoRollback }) {
 	};
 
 	const applyRollback = () => {
-		const rollbackResult = revertExecutableToBackupSync({
+		const rollbackResult = revertPackagedArtifactsToBackupSync({
 			currentExeName: CURRENT_EXE_NAME,
 			execPath: process.execPath,
 			cwd: process.cwd(),
@@ -173,6 +173,8 @@ function createUpdateValidationTracker({ logger, canAutoRollback }) {
 				{
 					backupPath: rollbackResult.backupPath,
 					currentPath: rollbackResult.currentPath,
+					runtimeBackupPath: rollbackResult.runtimeBackupPath,
+					runtimePath: rollbackResult.runtimePath,
 				},
 				"Automatic rollback applied after update crash loop.",
 			);

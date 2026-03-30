@@ -57,5 +57,5 @@ class MessageStore {
 
 const messageStore = new MessageStore();
 
-export { MessageStore, DEFAULT_TTL_MS, DEFAULT_MAX_ENTRIES };
+export { DEFAULT_MAX_ENTRIES, DEFAULT_TTL_MS, MessageStore };
 export default messageStore;

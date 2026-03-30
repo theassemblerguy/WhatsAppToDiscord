@@ -26,7 +26,8 @@ const decodeDataUrlBuffer = (sourceUrl = "") => {
 };
 
 const loadAttachmentBufferForWhatsApp = async (attachment = {}) => {
-	const sourceUrl = typeof attachment?.url === "string" ? attachment.url.trim() : "";
+	const sourceUrl =
+		typeof attachment?.url === "string" ? attachment.url.trim() : "";
 	if (!sourceUrl) return null;
 	if (sourceUrl.startsWith("data:")) {
 		const decoded = decodeDataUrlBuffer(sourceUrl);
@@ -73,7 +74,6 @@ const isDiscordVoiceLikeAttachment = (attachment = {}, mimetype = "") => {
 		return Number.isFinite(value) && value > 0;
 	});
 	return (
-		Boolean(attachment?.waveform) ||
 		hasDuration ||
 		DISCORD_VOICE_NAME_HINT_REGEX.test(name) ||
 		normalizedMime === "audio/ogg" ||
@@ -132,7 +132,9 @@ const transcodeAudioBufferToOggOpus = async (inputBuffer) => {
 		ffmpeg.on("close", (code) => {
 			if (code !== 0) {
 				const stderrText = Buffer.concat(stderrChunks).toString("utf8").trim();
-				finish(new Error(`ffmpeg_exit_${code}${stderrText ? `:${stderrText}` : ""}`));
+				finish(
+					new Error(`ffmpeg_exit_${code}${stderrText ? `:${stderrText}` : ""}`),
+				);
 				return;
 			}
 			const output = Buffer.concat(stdoutChunks);
@@ -151,18 +153,12 @@ const transcodeAudioBufferToOggOpus = async (inputBuffer) => {
 export const createAudioSendContentNormalizer = ({
 	getLogger = null,
 	normalizeBridgeMessageId = (value) => value,
-	toBuffer = (value) => value,
 } = {}) => {
 	let ffmpegMissingLogged = false;
 	const loggerForCall = () =>
 		typeof getLogger === "function" ? getLogger() : getLogger;
 
-	return async ({
-		attachment,
-		content,
-		jid,
-		discordMessageId,
-	} = {}) => {
+	return async ({ attachment, content, jid, discordMessageId } = {}) => {
 		if (!content || typeof content !== "object" || !content.audio) {
 			return content;
 		}
@@ -175,7 +171,10 @@ export const createAudioSendContentNormalizer = ({
 
 		const logger = loggerForCall();
 		const normalizedContent = { ...content };
-		const isVoiceLike = isDiscordVoiceLikeAttachment(attachment, normalizedMime);
+		const isVoiceLike = isDiscordVoiceLikeAttachment(
+			attachment,
+			normalizedMime,
+		);
 		if (isVoiceLike) {
 			normalizedContent.ptt = true;
 			const duration =
@@ -185,10 +184,6 @@ export const createAudioSendContentNormalizer = ({
 				0;
 			if (Number.isFinite(duration) && duration > 0) {
 				normalizedContent.seconds = Math.max(1, Math.round(duration));
-			}
-			const waveform = toBuffer(attachment?.waveform);
-			if (waveform?.length) {
-				normalizedContent.waveform = waveform;
 			}
 		}
 

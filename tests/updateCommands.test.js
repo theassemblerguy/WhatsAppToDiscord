@@ -30,6 +30,18 @@ const restoreObject = (target, snapshot) => {
 	Object.assign(target, snapshot);
 };
 
+const waitFor = async (
+	predicate,
+	{ timeoutMs = 3000, intervalMs = 10 } = {},
+) => {
+	const deadline = Date.now() + timeoutMs;
+	while (true) {
+		if (predicate()) return true;
+		if (Date.now() >= deadline) return false;
+		await delay(intervalMs);
+	}
+};
+
 const createInteraction = ({
 	channelId,
 	commandName = "checkupdate",
@@ -712,8 +724,13 @@ test("/poll in a newsletter-linked channel sends interactive payload first", asy
 			},
 		});
 		fakeClient.emit("interactionCreate", interaction);
-		await delay(2600);
+		const completed = await waitFor(
+			() =>
+				sendCalls.length === 1 && interaction.records.editReply.length === 1,
+			{ timeoutMs: 3200 },
+		);
 
+		assert.equal(completed, true);
 		assert.equal(sendCalls.length, 1);
 		assert.equal(sendCalls[0]?.jid, "120363123456789012@newsletter");
 		assert.equal(sendCalls[0]?.content?.poll?.name, "Bridge poll?");
@@ -903,8 +920,13 @@ test("/poll in a newsletter-linked channel falls back to text when interactive a
 			},
 		});
 		fakeClient.emit("interactionCreate", interaction);
-		await delay(2600);
+		const completed = await waitFor(
+			() =>
+				sendCalls.length === 2 && interaction.records.editReply.length === 1,
+			{ timeoutMs: 3200 },
+		);
 
+		assert.equal(completed, true);
 		assert.equal(sendCalls.length, 2);
 		assert.equal(sendCalls[0]?.jid, "120363123456789012@newsletter");
 		assert.equal(sendCalls[0]?.content?.poll?.name, "Bridge poll?");

@@ -11,7 +11,7 @@ fi
 if [ "$(id -u)" -eq 0 ]; then
 	mkdir -p "$STORAGE_DIR"
 	chown -R node:node "$STORAGE_DIR" || true
-	exec su-exec node "$@"
+	exec gosu node "$@"
 fi
 
 exec "$@"
