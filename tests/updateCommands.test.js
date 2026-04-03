@@ -51,6 +51,7 @@ const createInteraction = ({
 	numberOptions = {},
 	channelOptions = {},
 	userOptions = {},
+	deferReplyError = null,
 }) => {
 	const records = {
 		deferReply: [],
@@ -78,6 +79,9 @@ const createInteraction = ({
 		isChatInputCommand: () => true,
 		async deferReply(payload) {
 			records.deferReply.push(payload);
+			if (deferReplyError) {
+				throw deferReplyError;
+			}
 		},
 		async editReply(payload) {
 			records.editReply.push(payload);
@@ -106,6 +110,80 @@ class FakeDiscordClient extends EventEmitter {
 		return this;
 	}
 }
+
+test("interaction defer Unknown interaction is logged and does not escape the listener", async () => {
+	const originalDiscordUtils = {
+		getGuild: utils.discord.getGuild,
+		getControlChannel: utils.discord.getControlChannel,
+	};
+	const originalSettings = {
+		Token: state.settings.Token,
+		GuildID: state.settings.GuildID,
+		ControlChannelID: state.settings.ControlChannelID,
+	};
+	const originalDcClient = state.dcClient;
+	const originalLogger = state.logger;
+
+	try {
+		state.settings.Token = "TEST_TOKEN";
+		state.settings.GuildID = "guild";
+		state.settings.ControlChannelID = "control";
+		const warnings = [];
+		const errors = [];
+		state.logger = {
+			warn(entry, message) {
+				warnings.push({ entry, message });
+			},
+			error(entry, message) {
+				errors.push({ entry, message });
+			},
+		};
+
+		utils.discord.getGuild = async () => ({
+			commands: { set: async () => {} },
+		});
+		utils.discord.getControlChannel = async () => ({ send: async () => {} });
+
+		const fakeClient = new FakeDiscordClient();
+		setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+		const discordHandler = await importDiscordHandler(
+			"interaction-unknown-interaction-defer",
+		);
+		state.dcClient = await discordHandler.start();
+		await delay(0);
+
+		const interaction = createInteraction({
+			channelId: "control",
+			commandName: "checkupdate",
+			deferReplyError: Object.assign(new Error("Unknown interaction"), {
+				code: 10062,
+				rawError: { code: 10062 },
+			}),
+		});
+		fakeClient.emit("interactionCreate", interaction);
+		await delay(0);
+
+		assert.equal(interaction.records.deferReply.length, 1);
+		assert.equal(interaction.records.editReply.length, 0);
+		assert.equal(interaction.records.reply.length, 0);
+		assert.equal(errors.length, 0);
+		assert.equal(warnings.length, 1);
+		assert.equal(
+			warnings[0]?.message,
+			"Discord rejected the interaction callback before WA2DC could acknowledge it",
+		);
+	} finally {
+		utils.discord.getGuild = originalDiscordUtils.getGuild;
+		utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+
+		state.settings.Token = originalSettings.Token;
+		state.settings.GuildID = originalSettings.GuildID;
+		state.settings.ControlChannelID = originalSettings.ControlChannelID;
+		state.dcClient = originalDcClient;
+		state.logger = originalLogger;
+		resetClientFactoryOverrides();
+	}
+});
 
 test("/checkupdate in control channel refreshes persistent prompt without duplicate full update reply", async () => {
 	const originalDiscordUtils = {

@@ -766,9 +766,9 @@ class CommandResponder {
 		if (!this.interaction || this.deferred || this.replied) {
 			return;
 		}
+		await this.interaction.deferReply({ ephemeral: this.ephemeral });
 		this.deferred = true;
 		this.replied = true;
-		await this.interaction.deferReply({ ephemeral: this.ephemeral });
 	}
 
 	async send(payload) {
@@ -777,8 +777,9 @@ class CommandResponder {
 		if (this.interaction) {
 			if (this.deferred) {
 				if (!this.firstEditSent) {
+					const reply = await this.interaction.editReply(normalized);
 					this.firstEditSent = true;
-					return this.interaction.editReply(normalized);
+					return reply;
 				}
 				return this.interaction.followUp({
 					...normalized,
@@ -786,11 +787,12 @@ class CommandResponder {
 				});
 			}
 			if (!this.replied) {
-				this.replied = true;
-				return this.interaction.reply({
+				const reply = await this.interaction.reply({
 					...normalized,
 					ephemeral: this.ephemeral,
 				});
+				this.replied = true;
+				return reply;
 			}
 			return this.interaction.followUp({
 				...normalized,
@@ -5244,29 +5246,80 @@ const handleInteractionCommand = async (interaction, commandName) => {
 	await executeCommand(commandName, ctx);
 };
 
+const isUnknownInteractionError = (err) =>
+	Number(err?.code) === 10062 ||
+	Number(err?.rawError?.code) === 10062 ||
+	String(err?.message || "").toLowerCase().includes("unknown interaction");
+
+const handleInteractionCommandFailure = async ({
+	interaction,
+	commandName,
+	err,
+}) => {
+	const logContext = {
+		err,
+		commandName,
+		interactionId: interaction?.id,
+		channelId: interaction?.channelId,
+		customId: interaction?.customId,
+	};
+	if (isUnknownInteractionError(err)) {
+		state.logger?.warn?.(
+			logContext,
+			"Discord rejected the interaction callback before WA2DC could acknowledge it",
+		);
+		return;
+	}
+
+	state.logger?.error?.(logContext, "Slash command handling failed");
+	if (!interaction || interaction.deferred || interaction.replied) {
+		return;
+	}
+
+	try {
+		await interaction.reply({
+			content: "Command failed. Check logs.",
+			ephemeral: interaction.channelId !== state.settings.ControlChannelID,
+		});
+	} catch (replyErr) {
+		state.logger?.warn?.(
+			{ err: replyErr, commandName },
+			"Failed to send interaction error reply",
+		);
+	}
+};
+
 client.on("interactionCreate", async (interaction) => {
-	if (interaction.isButton()) {
-		if (interaction.customId === UPDATE_BUTTON_IDS.APPLY) {
-			await handleInteractionCommand(interaction, "update");
+	try {
+		if (interaction.isButton()) {
+			if (interaction.customId === UPDATE_BUTTON_IDS.APPLY) {
+				await handleInteractionCommand(interaction, "update");
+				return;
+			}
+			if (interaction.customId === UPDATE_BUTTON_IDS.SKIP) {
+				await handleInteractionCommand(interaction, "skipupdate");
+				return;
+			}
+			if (interaction.customId === ROLLBACK_BUTTON_ID) {
+				await handleInteractionCommand(interaction, "rollback");
+				return;
+			}
 			return;
 		}
-		if (interaction.customId === UPDATE_BUTTON_IDS.SKIP) {
-			await handleInteractionCommand(interaction, "skipupdate");
-			return;
-		}
-		if (interaction.customId === ROLLBACK_BUTTON_ID) {
-			await handleInteractionCommand(interaction, "rollback");
-			return;
-		}
-		return;
-	}
 
-	if (!interaction.isCommand?.() && !interaction.isChatInputCommand?.()) {
-		return;
-	}
+		if (!interaction.isCommand?.() && !interaction.isChatInputCommand?.()) {
+			return;
+		}
 
-	const commandName = interaction.commandName?.toLowerCase();
-	await handleInteractionCommand(interaction, commandName);
+		const commandName = interaction.commandName?.toLowerCase();
+		await handleInteractionCommand(interaction, commandName);
+	} catch (err) {
+		await handleInteractionCommandFailure({
+			interaction,
+			commandName: interaction.commandName?.toLowerCase() || interaction.customId,
+			err,
+		});
+	}
 });
 
 client.on("raw", (packet = {}) => {
