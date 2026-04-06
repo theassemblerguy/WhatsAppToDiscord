@@ -117,7 +117,7 @@ const LINK_PREVIEW_MAX_BYTES = 1024 * 1024;
 const LINK_PREVIEW_THUMB_MAX_BYTES = 8 * 1024 * 1024;
 const EXPLICIT_URL_REGEX = /<?https?:\/\/[^\s>]+>?/i;
 const BARE_URL_REGEX =
-	/(?:^|[\s<])((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[\w\-./?%&=+#]*)?)/i;
+	/(?:^|[\s<])((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[\w\-./?%&=+#]*)?)(?=$|[\s>)\],.;!?])/i;
 const TRAILING_PUNCTUATION_REGEX = /[)\],.;!?]+$/;
 const UPDATE_BUTTON_IDS = {
 	APPLY: "wa2dc:update",

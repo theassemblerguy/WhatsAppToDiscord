@@ -1,7 +1,7 @@
 # Bridge Constraints
 
 > Owner: WA2DC maintainers
-> Last reviewed: 2026-03-19
+> Last reviewed: 2026-04-06
 > Scope: Message-routing and identity constraints that prevent regressions.
 
 ## Echo-loop prevention
@@ -39,6 +39,7 @@ Respect transport constraints when emitting output:
 - when Discord GIF providers (for example Tenor/Giphy) expose extensionless video URLs plus static preview thumbnails, infer the animated video send from the provider embed and suppress the duplicate preview image
 - when WhatsApp exposes GIFs as `videoMessage` payloads with `gifPlayback`, prefer transcoding them into real Discord GIF attachments when runtime tooling (`ffmpeg`) is available; if transcoding is unavailable or fails, fall back to the original video attachment instead of dropping media
 - prefer the sticker asset URL exposed by Discord over reconstructing sticker CDN/proxy URLs locally; convert Discord sticker assets into WhatsApp sticker payloads when possible, including animated Lottie stickers via the dedicated renderer path
+- keep Discord -> WhatsApp bare-URL normalization narrow enough that plain email addresses are forwarded unchanged instead of being rewritten into malformed `https://.../@domain` text
 
 ## Routing gates
 
