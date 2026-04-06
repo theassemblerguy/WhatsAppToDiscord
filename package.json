@@ -25,8 +25,8 @@
 	"dependencies": {
 		"@adiwajshing/keyed-db": "^0.2.4",
 		"@whiskeysockets/baileys": "^7.0.0-rc.9",
-		"canvas": "^3.2.2",
-		"discord.js": "^14.25.1",
+		"canvas": "^3.2.3",
+		"discord.js": "^14.26.2",
 		"jsdom": "^29.0.1",
 		"link-preview-js": "3.2.0",
 		"lottie-web": "^5.13.0",
@@ -35,11 +35,11 @@
 		"qrcode": "^1.5.3",
 		"sharp": "^0.34.5",
 		"tar": "^7.5.13",
-		"undici": "^7.24.6"
+		"undici": "^8.0.2"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.4.9",
-		"esbuild": "^0.27.4"
+		"@biomejs/biome": "^2.4.10",
+		"esbuild": "^0.28.0"
 	},
 	"pkg": {},
 	"overrides": {
@@ -52,10 +52,10 @@
 			"file-type": "21.3.3"
 		},
 		"discord.js": {
-			"undici": "6.24.0"
+			"undici": "6.24.1"
 		},
 		"@discordjs/rest": {
-			"undici": "6.24.0"
+			"undici": "6.24.1"
 		},
 		"sharp": {
 			"tar-fs": "3.1.1"
